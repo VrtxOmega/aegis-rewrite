@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aegis ReWrite</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Custom Titlebar -->
+    <div class="titlebar">
+        <div class="titlebar-drag">
+            <span class="titlebar-icon">⛨</span>
+            <span class="titlebar-title">Aegis ReWrite</span>
+            <span class="titlebar-ai-badge" id="ai-badge" title="Ollama AI status">AI</span>
+        </div>
+        <div class="titlebar-controls">
+            <button class="tb-btn" onclick="aegis.minimize()">─</button>
+            <button class="tb-btn" onclick="aegis.maximize()">☐</button>
+            <button class="tb-btn tb-close" onclick="aegis.close()">✕</button>
+        </div>
+    </div>
+
+    <!-- Main Layout -->
+    <div class="app-container">
+
+        <!-- Top Bar: Folder + Scan -->
+        <div class="top-bar">
+            <button class="folder-btn" id="select-folder-btn">
+                <span class="folder-icon">📁</span>
+                <span class="folder-path" id="folder-path">Select a project folder...</span>
+            </button>
+            <button class="scan-btn" id="scan-btn" disabled>⛨ Scan</button>
+        </div>
+
+        <!-- Content Area -->
+        <div class="content-area">
+
+            <!-- Left: Findings List -->
+            <div class="findings-panel glass-panel">
+                <div class="panel-header">
+                    <h2>Findings <span class="badge" id="findings-count">0</span></h2>
+                    <div class="severity-filters" id="severity-filters"></div>
+                </div>
+                <div class="scan-summary" id="scan-summary" style="display:none;"></div>
+                <div class="findings-list" id="findings-list">
+                    <div class="empty-state">
+                        <div class="empty-icon">🔍</div>
+                        <p>Select a folder and scan to find vulnerabilities</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Detail / Code View -->
+            <div class="detail-panel glass-panel">
+                <div class="detail-placeholder" id="detail-placeholder">
+                    <div class="empty-icon">📋</div>
+                    <p>Select a finding to see details</p>
+                </div>
+                <div class="detail-content" id="detail-content" style="display:none;">
+                    <div class="detail-header">
+                        <span class="detail-severity" id="detail-severity"></span>
+                        <span class="detail-title" id="detail-title"></span>
+                    </div>
+                    <div class="detail-meta" id="detail-meta"></div>
+
+                    <!-- AI Explanation -->
+                    <div class="ai-section" id="ai-section" style="display:none;">
+                        <div class="ai-header">
+                            <span class="ai-icon">🤖</span>
+                            <span>AI Explanation</span>
+                            <button class="ai-refresh-btn" id="ai-refresh-btn" title="Regenerate">↻</button>
+                        </div>
+                        <div class="ai-body" id="ai-body">Loading...</div>
+                    </div>
+
+                    <!-- Remediation -->
+                    <div class="remediation-section">
+                        <h3>Suggested Fix</h3>
+                        <div class="remediation-text" id="remediation-text"></div>
+                        <pre class="remediation-patch" id="remediation-patch"></pre>
+                        <div class="remediation-meta">
+                            <span class="confidence-badge" id="confidence-badge"></span>
+                            <a class="docs-link" id="docs-link" target="_blank">📖 Docs</a>
+                        </div>
+                    </div>
+
+                    <!-- Code + Diff -->
+                    <div class="code-section">
+                        <div class="code-header">
+                            <h3>Code Preview</h3>
+                            <div class="code-actions">
+                                <button class="action-btn" id="preview-diff-btn">👁 Preview Diff</button>
+                                <button class="action-btn primary" id="apply-fix-btn">⚡ Apply Fix</button>
+                                <button class="action-btn muted" id="ignore-btn">Skip</button>
+                            </div>
+                        </div>
+                        <pre class="code-block" id="code-block"></pre>
+                        <div class="diff-block" id="diff-block" style="display:none;"></div>
+                        <div class="fix-status" id="fix-status"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom: Batch Fix Bar -->
+        <div class="batch-bar" id="batch-bar" style="display:none;">
+            <div class="batch-info">
+                <span class="batch-icon">⚡</span>
+                <span class="batch-label" id="batch-label"></span>
+            </div>
+            <div class="batch-actions">
+                <button class="action-btn" id="batch-preview-btn">Preview All</button>
+                <button class="action-btn primary" id="batch-apply-btn" style="display:none;">Apply All Fixes</button>
+                <button class="action-btn muted" id="batch-cancel-btn" style="display:none;">Cancel</button>
+            </div>
+            <div class="batch-progress" id="batch-progress" style="display:none;">
+                <div class="batch-progress-bar" id="batch-progress-bar"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
