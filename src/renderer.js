@@ -84,57 +84,112 @@ async function runScan() {
     document.getElementById('detail-placeholder').style.display = 'flex';
     document.getElementById('diff-block').style.display = 'none';
     document.getElementById('fix-status').textContent = '';
+    
+    // UI elements for progress
+    const findingsList = document.getElementById('findings-list');
+    const summaryEl = document.getElementById('scan-summary');
+    const progressContainer = document.getElementById('scan-progress-container');
+    const progressStatus = document.getElementById('scan-progress-status');
+    const progressBar = document.getElementById('scan-progress-bar');
+    const progressFile = document.getElementById('scan-progress-file');
 
-    try {
-        const result = await aegis.post('/api/scan', { path: currentProjectPath });
+    findingsList.style.display = 'none';
+    summaryEl.style.display = 'none';
+    progressContainer.style.display = 'flex';
+    progressStatus.textContent = 'Counting files...';
+    progressBar.style.width = '0%';
+    progressFile.textContent = '...';
 
-        if (result.error) {
-            toast(result.error, 'error');
-            return;
-        }
+    // Start streaming scan
+    const url = new URL('http://127.0.0.1:5055/api/scan/stream');
+    url.searchParams.append('path', currentProjectPath);
+    
+    const eventSource = new EventSource(url.toString());
 
-        currentFindings = result.findings || [];
-        console.log('[ReWrite] Scan results:', currentFindings.length, 'findings');
-
-        // Load resolutions
+    eventSource.onmessage = async (event) => {
         try {
-            const resData = await aegis.get(`/api/resolutions?project_path=${encodeURIComponent(currentProjectPath)}`);
-            resolutions = {};
-            (resData.resolutions || []).forEach(r => { resolutions[r.finding_hash] = r.status; });
-        } catch (e) { /* resolutions unavailable */ }
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'error') {
+                eventSource.close();
+                throw new Error(data.message);
+            }
+            
+            if (data.type === 'counting') {
+                progressStatus.textContent = `Scanning ${data.total_files.toLocaleString()} files...`;
+            }
+            
+            if (data.type === 'progress') {
+                const percent = Math.min(100, (data.files_scanned / data.total_files) * 100);
+                progressBar.style.width = `${percent}%`;
+                progressBar.style.backgroundColor = 'var(--gold)';
+                progressFile.textContent = data.current_file;
+                progressStatus.textContent = `Scanning... ${data.files_scanned.toLocaleString()} / ${data.total_files.toLocaleString()} files`;
+                if (data.findings_so_far > 0) {
+                    document.getElementById('findings-count').textContent = data.findings_so_far;
+                }
+            }
+            
+            if (data.type === 'complete') {
+                eventSource.close();
+                
+                // Hide progress, show lists
+                progressContainer.style.display = 'none';
+                findingsList.style.display = '';
+                summaryEl.style.display = 'flex';
 
-        // Summary
-        const summaryEl = document.getElementById('scan-summary');
-        summaryEl.style.display = 'flex';
-        summaryEl.innerHTML = `
-            <span>${result.files_scanned} files</span>
-            <span>${result.scan_time_ms}ms</span>
-            ${result.severity_counts.CRITICAL ? `<span style="color:var(--red)">${result.severity_counts.CRITICAL} critical</span>` : ''}
-            ${result.severity_counts.HIGH ? `<span style="color:var(--orange)">${result.severity_counts.HIGH} high</span>` : ''}
-            ${result.severity_counts.MEDIUM ? `<span style="color:var(--gold)">${result.severity_counts.MEDIUM} medium</span>` : ''}
-        `;
+                const result = data;
+                currentFindings = result.findings || [];
+                console.log('[ReWrite] Scan complete:', currentFindings.length, 'findings');
 
-        // Update badge
-        document.getElementById('findings-count').textContent = currentFindings.length;
+                // Load resolutions
+                try {
+                    const resData = await aegis.get(`/api/resolutions?project_path=${encodeURIComponent(currentProjectPath)}`);
+                    resolutions = {};
+                    (resData.resolutions || []).forEach(r => { resolutions[r.finding_hash] = r.status; });
+                } catch (e) { /* resolutions unavailable */ }
 
-        // Render severity filters
-        renderSeverityFilters(result.severity_counts);
+                // Summary HTML
+                summaryEl.innerHTML = `
+                    <span>${result.files_scanned} files</span>
+                    <span>${result.scan_time_ms}ms</span>
+                    ${result.severity_counts.CRITICAL ? `<span style="color:var(--red)">${result.severity_counts.CRITICAL} critical</span>` : ''}
+                    ${result.severity_counts.HIGH ? `<span style="color:var(--orange)">${result.severity_counts.HIGH} high</span>` : ''}
+                    ${result.severity_counts.MEDIUM ? `<span style="color:var(--gold)">${result.severity_counts.MEDIUM} medium</span>` : ''}
+                `;
 
-        // Render findings
-        renderFindings();
+                // Update badge and render contents
+                document.getElementById('findings-count').textContent = currentFindings.length;
+                renderSeverityFilters(result.severity_counts);
+                renderFindings();
+                updateBatchBar();
 
-        // Show batch bar if there are fixable findings
-        updateBatchBar();
+                // Reset button
+                scanBtn.disabled = false;
+                scanBtn.classList.remove('scanning');
+                scanBtn.textContent = '⛨ Scan';
+                
+                toast(`Scan complete: ${currentFindings.length} findings`, currentFindings.length > 0 ? 'info' : 'success');
+            }
+        } catch (e) {
+            console.error('[ReWrite] Scan SSE parsing error:', e);
+        }
+    };
 
-        toast(`Scan complete: ${currentFindings.length} findings`, currentFindings.length > 0 ? 'info' : 'success');
-    } catch (e) {
-        toast(`Scan failed: ${e.message}`, 'error');
-        console.error('[ReWrite] Scan error:', e);
-    } finally {
+    eventSource.onerror = (e) => {
+        eventSource.close();
+        
+        // Reset UI on failure
+        progressContainer.style.display = 'none';
+        findingsList.style.display = '';
+        
         scanBtn.disabled = false;
         scanBtn.classList.remove('scanning');
         scanBtn.textContent = '⛨ Scan';
-    }
+        
+        toast('Connection to scanner lost.', 'error');
+        console.error('[ReWrite] Scan SSE network error:', e);
+    };
 }
 
 // ═══════════════════════════════════════════
@@ -372,7 +427,8 @@ async function previewDiff() {
         }
 
         if (!result.method) {
-            diffEl.innerHTML = '<div class="diff-line-context" style="color:var(--orange)">⚠ Could not generate a fix for this finding.</div>';
+            const msg = result.message || 'Could not generate a fix for this finding.';
+            diffEl.innerHTML = `<div class="diff-line-context" style="color:var(--orange)">⚠ ${escapeHtml(msg)}</div>`;
             return;
         }
 
@@ -465,9 +521,118 @@ async function batchPreview() {
         return (resolutions[fHash] || 'OPEN') === 'OPEN';
     });
 
-    toast(`${openFindings.length} findings will be fixed`, 'info');
+    if (openFindings.length === 0) {
+        toast('No open findings to preview', 'info');
+        return;
+    }
+
+    // Switch detail panel to batch preview mode
+    document.getElementById('detail-placeholder').style.display = 'none';
+    document.getElementById('detail-content').style.display = 'block';
+
+    // Replace detail content with batch preview header
+    const sevEl = document.getElementById('detail-severity');
+    sevEl.textContent = 'BATCH';
+    sevEl.className = 'detail-severity MEDIUM';
+    document.getElementById('detail-title').textContent = `Preview All Fixes (${openFindings.length})`;
+    document.getElementById('detail-meta').textContent = 'Generating previews for all open findings...';
+
+    // Hide single-finding sections
+    document.getElementById('ai-section').style.display = 'none';
+    document.querySelector('.remediation-section').style.display = 'none';
+    document.querySelector('.code-header').style.display = 'none';
+    document.getElementById('code-block').style.display = 'none';
+    document.getElementById('fix-status').textContent = '';
+
+    // Build batch diff container in the diff-block area
+    const diffEl = document.getElementById('diff-block');
+    diffEl.style.display = 'block';
+    diffEl.innerHTML = '<div class="diff-line-context" style="color:var(--gold)">⏳ Loading previews...</div>';
+
+    // Show batch progress bar
+    const progressContainer = document.getElementById('batch-progress');
+    const progressBar = document.getElementById('batch-progress-bar');
+    progressContainer.style.display = 'block';
+    progressBar.style.width = '0%';
+
+    // Fetch all previews
+    let completed = 0;
+    let succeeded = 0;
+    let failed = 0;
+    const previews = [];
+
+    for (const finding of openFindings) {
+        const filepath = resolvePath(finding.file);
+        try {
+            const result = await aegis.post('/api/preview', {
+                path: filepath,
+                finding: finding,
+            });
+            previews.push({ finding, result, error: null });
+            if (result && result.method) succeeded++;
+            else failed++;
+        } catch (e) {
+            previews.push({ finding, result: null, error: e.message });
+            failed++;
+        }
+
+        completed++;
+        progressBar.style.width = `${Math.round((completed / openFindings.length) * 100)}%`;
+    }
+
+    // Render all diffs
+    let html = `<div style="padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:12px;">
+        <span style="color:var(--green);font-weight:600;">✅ ${succeeded} fixable</span>
+        ${failed > 0 ? `<span style="color:var(--orange);font-weight:600;margin-left:12px;">⚠ ${failed} unfixable</span>` : ''}
+    </div>`;
+
+    for (const { finding, result, error } of previews) {
+        const title = escapeHtml(finding.title);
+        const file = escapeHtml(finding.file);
+        const line = finding.line;
+
+        if (error) {
+            html += `<div style="margin-bottom:16px;padding:10px;border:1px solid rgba(240,68,68,0.2);border-radius:6px;">
+                <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:4px;">✗ ${title}</div>
+                <div style="font-size:11px;color:var(--text-muted);">${file}:${line}</div>
+                <div style="font-size:11px;color:var(--red);margin-top:4px;">Error: ${escapeHtml(error)}</div>
+            </div>`;
+            continue;
+        }
+
+        if (!result || !result.method) {
+            html += `<div style="margin-bottom:16px;padding:10px;border:1px solid rgba(240,160,48,0.2);border-radius:6px;">
+                <div style="font-size:12px;font-weight:600;color:var(--orange);margin-bottom:4px;">⚠ ${title}</div>
+                <div style="font-size:11px;color:var(--text-muted);">${file}:${line}</div>
+                <div style="font-size:11px;color:var(--orange);margin-top:4px;">Could not generate a fix</div>
+            </div>`;
+            continue;
+        }
+
+        const methodLabel = result.method === 'ai' ? '🤖 AI' : '⚡ Pattern';
+        const shiftNote = result.line_shifted ? ` <span style="color:var(--blue);font-size:10px;">(line shifted → ${result.line_num})</span>` : '';
+
+        html += `<div style="margin-bottom:16px;padding:10px;border:1px solid rgba(61,224,104,0.15);border-radius:6px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                <span style="font-size:12px;font-weight:600;color:var(--green);">✓ ${title}</span>
+                <span style="font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(61,224,104,0.1);color:var(--green);">${methodLabel}</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${file}:${line}${shiftNote}</div>
+            <div class="diff-block" style="display:block;margin:0;max-height:200px;">${formatDiff(result.diff)}</div>
+        </div>`;
+    }
+
+    diffEl.innerHTML = html;
+    progressContainer.style.display = 'none';
+
+    // Update summary
+    document.getElementById('detail-meta').textContent = `${succeeded} of ${openFindings.length} findings have fixes ready`;
+
+    // Show batch apply/cancel buttons
     document.getElementById('batch-apply-btn').style.display = 'inline-flex';
     document.getElementById('batch-cancel-btn').style.display = 'inline-flex';
+
+    toast(`Preview complete: ${succeeded} fixable, ${failed} need manual review`, succeeded > 0 ? 'success' : 'info');
 }
 
 async function batchApply() {
@@ -500,6 +665,19 @@ async function batchApply() {
 function batchCancel() {
     document.getElementById('batch-apply-btn').style.display = 'none';
     document.getElementById('batch-cancel-btn').style.display = 'none';
+    document.getElementById('batch-progress').style.display = 'none';
+
+    // Restore sections hidden by batch preview
+    document.querySelector('.remediation-section').style.display = '';
+    document.querySelector('.code-header').style.display = '';
+    document.getElementById('code-block').style.display = '';
+    document.getElementById('diff-block').style.display = 'none';
+
+    // Reset detail panel
+    if (!selectedFinding) {
+        document.getElementById('detail-content').style.display = 'none';
+        document.getElementById('detail-placeholder').style.display = 'flex';
+    }
 }
 
 // ═══════════════════════════════════════════

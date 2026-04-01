@@ -167,3 +167,139 @@ def scan_project(project_path):
         'findings': findings,
         'scan_time_ms': elapsed_ms,
     }
+
+
+def scan_project_streaming(project_path):
+    """Streaming scanner — yields JSON progress events for SSE.
+
+    Phase 1: Fast directory walk to count total scannable files.
+    Phase 2: Full scan, yielding progress after each file.
+
+    Yields dicts:
+      {"type": "counting", "total_files": N}
+      {"type": "progress", "files_scanned": N, "total_files": T,
+       "current_file": "rel/path", "findings_so_far": F}
+      {"type": "complete", ...full result dict...}
+    """
+    import json as _json
+
+    if not os.path.isdir(project_path):
+        yield {'type': 'error', 'message': f'Not a directory: {project_path}'}
+        return
+
+    # ── Phase 1: Count total scannable files (fast — no file reading) ──
+    total_files = 0
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        for filename in files:
+            _, ext = os.path.splitext(filename)
+            if ext.lower() in SCAN_EXTENSIONS:
+                total_files += 1
+
+    yield {'type': 'counting', 'total_files': total_files}
+
+    # ── Phase 2: Full scan with progress ──
+    findings = []
+    files_scanned = 0
+    start = time.time()
+
+    for root, dirs, files in os.walk(project_path):
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+
+        for filename in files:
+            filepath = os.path.join(root, filename)
+            rel_path = os.path.relpath(filepath, project_path)
+            _, ext = os.path.splitext(filename)
+            ext = ext.lower()
+
+            # Sensitive file detection
+            if filename.lower() in SENSITIVE_FILES:
+                findings.append({
+                    'severity': 'HIGH',
+                    'category': 'Sensitive File',
+                    'file': rel_path,
+                    'line': 0,
+                    'title': f'Sensitive file detected: {filename}',
+                    'detail': 'This file may contain credentials or private keys.',
+                })
+
+            if ext not in SCAN_EXTENSIONS:
+                continue
+
+            try:
+                with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read(256_000)
+            except Exception:
+                continue
+
+            files_scanned += 1
+            lines = content.splitlines()
+
+            for i, line in enumerate(lines):
+                line_num = i + 1
+
+                for pattern, secret_type in SECRET_PATTERNS:
+                    if pattern.search(line):
+                        if any(x in rel_path.lower() for x in [
+                            'test', 'example', 'mock', 'fixture',
+                            'package-lock', 'yarn.lock', '.min.'
+                        ]):
+                            continue
+                        findings.append({
+                            'severity': 'CRITICAL',
+                            'category': 'Hardcoded Secret',
+                            'file': rel_path,
+                            'line': line_num,
+                            'title': f'{secret_type} detected',
+                            'detail': f'Line {line_num}: potential {secret_type.lower()} in source code',
+                        })
+
+                for pattern, func_name, target_ext in DANGEROUS_FUNCTIONS:
+                    if ext == target_ext and pattern.search(line):
+                        stripped = line.strip()
+                        if stripped.startswith('#') or stripped.startswith('//'):
+                            continue
+                        findings.append({
+                            'severity': 'MEDIUM',
+                            'category': 'Dangerous Function',
+                            'file': rel_path,
+                            'line': line_num,
+                            'title': f'{func_name} usage detected',
+                            'detail': f'Line {line_num}: {func_name} can lead to code injection',
+                        })
+
+                for pattern, msg in BINDING_PATTERNS:
+                    if pattern.search(line):
+                        findings.append({
+                            'severity': 'MEDIUM',
+                            'category': 'Exposed Binding',
+                            'file': rel_path,
+                            'line': line_num,
+                            'title': msg,
+                            'detail': f'Line {line_num}: {msg.lower()} — potential network exposure',
+                        })
+
+            # Yield progress event after each file scanned
+            yield {
+                'type': 'progress',
+                'files_scanned': files_scanned,
+                'total_files': total_files,
+                'current_file': rel_path,
+                'findings_so_far': len(findings),
+            }
+
+    elapsed_ms = int((time.time() - start) * 1000)
+
+    sev_counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+    for f in findings:
+        sev_counts[f['severity']] = sev_counts.get(f['severity'], 0) + 1
+
+    yield {
+        'type': 'complete',
+        'project_path': project_path,
+        'files_scanned': files_scanned,
+        'total_findings': len(findings),
+        'severity_counts': sev_counts,
+        'findings': findings,
+        'scan_time_ms': elapsed_ms,
+    }

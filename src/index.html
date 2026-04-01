@@ -43,6 +43,16 @@
                     <div class="severity-filters" id="severity-filters"></div>
                 </div>
                 <div class="scan-summary" id="scan-summary" style="display:none;"></div>
+                
+                <!-- Scan Progress overlay -->
+                <div id="scan-progress-container" style="display:none; padding: 20px; flex-direction: column; gap: 12px;">
+                    <div style="font-size: 13px; font-weight: 600; color: var(--gold);" id="scan-progress-status">Preparing scan...</div>
+                    <div class="batch-progress" style="display: block; margin: 0;">
+                        <div class="batch-progress-bar" id="scan-progress-bar" style="width: 0%;"></div>
+                    </div>
+                    <div style="font-size: 11px; color: var(--text-muted); font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" id="scan-progress-file">...</div>
+                </div>
+
                 <div class="findings-list" id="findings-list">
                     <div class="empty-state">
                         <div class="empty-icon">🔍</div>
