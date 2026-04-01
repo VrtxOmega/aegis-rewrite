@@ -164,7 +164,7 @@ def set_config():
 def _fix_eval(line, finding, ctx):
     """Replace eval() with ast.literal_eval()."""
     if re.search(r'\beval\s*\(', line):
-        return re.sub(r'\beval\s*\(', 'ast.literal_eval(', line)
+        return re.sub(r'\beval(\s*)\(', r'ast.literal_eval\1(', line)
     return None
 
 
@@ -180,7 +180,7 @@ def _fix_exec(line, finding, ctx):
 def _fix_os_system(line, finding, ctx):
     """Replace os.system() with subprocess.run()."""
     if re.search(r'\bos\.system\s*\(', line):
-        return re.sub(r'\bos\.system\s*\(', 'subprocess.run(', line)
+        return re.sub(r'\bos\.system(\s*)\(', r'subprocess.run\1(', line)
     return None
 
 
@@ -233,7 +233,7 @@ def _fix_binding_0000(line, finding, ctx):
 def _fix_cors_unrestricted(line, finding, ctx):
     """Add origin restriction to bare CORS(app)."""
     if re.search(r'CORS\s*\(\s*\w+\s*\)', line):
-        return re.sub(r'CORS\s*\(\s*(\w+)\s*\)', r'CORS(\1, origins=["http://127.0.0.1"])', line)
+        return re.sub(r'CORS(\s*)\((\s*)(\w+)(\s*)\)', r'CORS\1(\2\3, origins=["http://127.0.0.1"]\4)', line)
     return None
 
 
@@ -273,29 +273,33 @@ def _fix_hardcoded_secret(line, finding, ctx):
         env_key = var_name.upper()
         return f'{indent}{var_name} = os.environ.get("{env_key}", "")'
 
-    # JS-style: const/let/var VAR = "value"
+    # JS-style: const/let/var VAR = "value" or export const VAR = "value"
     js_match = re.match(
-        r'''(const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*["'].*?["']''',
+        r'''(?:export\s+)?(const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:["'`].*?["'`])''',
         stripped
     )
     if js_match:
         decl = js_match.group(1)
+        # Re-attach 'export' if it was part of the original assignment
+        if stripped.startswith('export '):
+            decl = f'export {decl}'
         var_name = js_match.group(2)
         env_key = re.sub(r'([a-z])([A-Z])', r'\1_\2', var_name).upper()
         return f'{indent}{decl} {var_name} = process.env.{env_key} || ""'
 
     # Dict/object style: "key": "value" or key: "value"
-    dict_match = re.match(
+    dict_match = re.search(
         r'''(["']?)([A-Za-z_][A-Za-z0-9_]*)\1\s*:\s*["']([^"']{8,})["']''',
         stripped
     )
     if dict_match:
         key_name = dict_match.group(2)
-        env_key = key_name.upper()
-        if is_js:
-            return f'{indent}"{key_name}": process.env.{env_key} || ""'
-        else:
-            return f'{indent}"{key_name}": os.environ.get("{env_key}", "")'
+        env_key = re.sub(r'([a-z])([A-Z])', r'\1_\2', key_name).upper()
+        
+        replacement = f'"{key_name}": process.env.{env_key} || ""' if is_js else f'"{key_name}": os.environ.get("{env_key}", "")'
+        
+        pattern = r'(["\']?)' + re.escape(key_name) + r'\1\s*:\s*["\'][^"\']{8,}["\']'
+        return re.sub(pattern, replacement, line, count=1)
 
     # Private key block (-----BEGIN ... PRIVATE KEY-----) — can't fix inline
     if '-----BEGIN' in stripped and 'PRIVATE KEY' in stripped:
@@ -332,6 +336,10 @@ def _apply_pattern_fix(line, finding):
     """Dispatch-table pattern fixer.
     Returns the fixed line if a pattern matched and produced a change, else None.
     """
+    # Reject lines that are entirely commented out
+    if re.match(r'^\s*(#|//|/\*|\*|<!--)', line):
+        return None
+
     category = finding.get('category', '')
     title_lower = finding.get('title', '').lower()
 
