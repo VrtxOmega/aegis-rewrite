@@ -86,6 +86,7 @@ function createWindow() {
         minWidth: 900,
         minHeight: 600,
         backgroundColor: '#020204',
+        icon: path.join(__dirname, '..', 'assets', 'icon.ico'),
         titleBarStyle: 'hidden',
         frame: false,
         webPreferences: {
