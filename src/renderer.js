@@ -14,6 +14,8 @@ let selectedIndex = -1;
 let resolutions = {};
 let aiAvailable = false;
 let activeSeverityFilter = null;
+let currentBatchReqId = null;
+let aiModel = 'qwen2.5:7b';
 
 // ═══════════════════════════════════════════
 // INIT
@@ -21,6 +23,16 @@ let activeSeverityFilter = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('[ReWrite] Renderer init');
+
+    const savedModel = localStorage.getItem('aegis-ai-model');
+    if (savedModel) {
+        aiModel = savedModel;
+        document.getElementById('ai-model-select').value = aiModel;
+    }
+    document.getElementById('ai-model-select').addEventListener('change', (e) => {
+        aiModel = e.target.value;
+        localStorage.setItem('aegis-ai-model', aiModel);
+    });
 
     // Check AI status
     try {
@@ -61,7 +73,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Wire batch actions
     document.getElementById('batch-preview-btn').addEventListener('click', batchPreview);
+    document.getElementById('batch-stop-btn').addEventListener('click', stopBatchLoading);
     document.getElementById('batch-apply-btn').addEventListener('click', batchApply);
+    document.getElementById('batch-rollback-btn').addEventListener('click', rollbackBatch);
     document.getElementById('batch-cancel-btn').addEventListener('click', batchCancel);
 });
 
@@ -316,22 +330,23 @@ async function loadRemediation(finding) {
         const suggestion = await aegis.post('/api/suggest', finding);
         console.log('[ReWrite] Remediation result:', suggestion);
 
-        if (!suggestion || suggestion.error) {
-            document.getElementById('remediation-text').textContent = finding.detail || 'No remediation available.';
-            return;
+        if (!suggestion || suggestion.error || !suggestion.suggestion) {
+            document.getElementById('remediation-text').innerHTML = `<span style="font-weight:bold;color:var(--orange);border-left:2px solid var(--orange);padding-left:8px;margin-bottom:8px;display:inline-block">✋ MANUAL REQUIRED</span><br>${escapeHtml(finding.detail || 'No specific automated rule available for this finding.')}`;
+        } else {
+            document.getElementById('remediation-text').textContent = suggestion.suggestion;
         }
 
-        document.getElementById('remediation-text').textContent = suggestion.suggestion || 'No specific fix available.';
-        document.getElementById('remediation-patch').textContent = suggestion.example_patch || '';
+        document.getElementById('remediation-patch').textContent = suggestion?.example_patch || '';
 
         const badge = document.getElementById('confidence-badge');
-        if (suggestion.confidence > 0) {
+        if (suggestion && suggestion.confidence > 0) {
             const level = suggestion.confidence >= 0.85 ? 'high' : suggestion.confidence >= 0.7 ? 'medium' : 'low';
             badge.className = `confidence-badge ${level}`;
-            badge.textContent = `${Math.round(suggestion.confidence * 100)}% confidence`;
+            const actionText = suggestion.confidence >= 0.85 ? '<span style="color:var(--green)">⚡ Auto-fix safe</span>' : '<span style="color:var(--orange)">👁 Review first</span>';
+            badge.innerHTML = `${Math.round(suggestion.confidence * 100)}% confidence &nbsp;&bull;&nbsp; ${actionText}`;
         } else {
             badge.className = 'confidence-badge';
-            badge.textContent = '';
+            badge.innerHTML = `<span style="color:var(--text-muted)">✋ Manual only</span>`;
         }
 
         const docsLink = document.getElementById('docs-link');
@@ -388,7 +403,7 @@ async function loadAIExplanation(finding) {
     aiBody.textContent = 'Generating explanation...';
 
     try {
-        const result = await aegis.post('/api/ai/explain', finding);
+        const result = await aegis.post('/api/ai/explain', { ...finding, model: aiModel });
         if (result && result.explanation) {
             aiBody.className = 'ai-body';
             aiBody.textContent = result.explanation;
@@ -419,6 +434,7 @@ async function previewDiff() {
         const result = await aegis.post('/api/preview', {
             path: filepath,
             finding: selectedFinding,
+            model: aiModel
         });
 
         if (!result || result.error) {
@@ -451,13 +467,19 @@ async function applyFix() {
         const result = await aegis.post('/api/fix', {
             path: filepath,
             finding: selectedFinding,
+            model: aiModel,
             project_path: currentProjectPath,
         });
 
         if (result && result.applied) {
-            const methodLabel = result.method === 'ai' ? 'AI rewrite' : 'pattern fix';
-            statusEl.textContent = `✅ Fixed (${methodLabel}) — backup saved`;
-            toast(`Fix applied via ${methodLabel}`, 'success');
+            let trustHtml = '';
+            if (result.method === 'ai') {
+                trustHtml = `🤖 AI Contextual Rewrite<br>↳ Backup created → .bak`;
+            } else {
+                trustHtml = `⚡ Deterministic rule applied<br>↳ No heuristic mutation<br>↳ Backup created → .bak`;
+            }
+            statusEl.innerHTML = `<span style="color:var(--green);font-weight:bold;">✅ Fixed</span><br><br><span style="color:var(--text-muted);font-size:12px;border-left:2px solid var(--green);padding-left:8px;display:inline-block;line-height:1.4">${trustHtml}</span>`;
+            toast(`Fix applied via ${result.method === 'ai' ? 'AI rewrite' : 'pattern fix'}`, 'success');
 
             const fHash = findingHash(selectedFinding);
             resolutions[fHash] = 'FIXED';
@@ -555,6 +577,12 @@ async function batchPreview() {
     progressContainer.style.display = 'block';
     progressBar.style.width = '0%';
 
+    document.getElementById('batch-preview-btn').style.display = 'none';
+    document.getElementById('batch-stop-btn').style.display = 'inline-flex';
+    document.getElementById('batch-rollback-btn').style.display = 'none';
+
+    currentBatchReqId = `batch-${Date.now()}`;
+
     // Fetch all previews
     let completed = 0;
     let succeeded = 0;
@@ -567,7 +595,14 @@ async function batchPreview() {
             const result = await aegis.post('/api/preview', {
                 path: filepath,
                 finding: finding,
-            });
+                model: aiModel
+            }, currentBatchReqId);
+            
+            if (result && result.abort) {
+                console.log('[ReWrite] Batch preview aborted by user');
+                break;
+            }
+
             previews.push({ finding, result, error: null });
             if (result && result.method) succeeded++;
             else failed++;
@@ -579,6 +614,8 @@ async function batchPreview() {
         completed++;
         progressBar.style.width = `${Math.round((completed / openFindings.length) * 100)}%`;
     }
+
+    document.getElementById('batch-stop-btn').style.display = 'none';
 
     // Render all diffs
     let html = `<div style="padding:8px 0;border-bottom:1px solid var(--border);margin-bottom:12px;">
@@ -642,9 +679,24 @@ async function batchApply() {
     });
 
     try {
+        // First check git status
+        const gitStatus = await aegis.post('/api/git/status', { path: currentProjectPath });
+        if (gitStatus.is_git && !gitStatus.is_clean) {
+            toast('Cannot batch fix: Working directory has uncommitted changes. Please commit or stash first.', 'error');
+            return;
+        }
+
+        // Auto-Checkpoint if it's a git repo
+        if (gitStatus.is_git) {
+            await aegis.post('/api/git/checkpoint', { path: currentProjectPath });
+            toast('Created pre-remediation Git checkpoint', 'info');
+        }
+
+        // Apply
         const result = await aegis.post('/api/batch_fix', {
             findings: openFindings,
             project_path: currentProjectPath,
+            model: aiModel
         });
 
         toast(`Batch complete: ${result.applied} applied, ${result.skipped} skipped`, 'success');
@@ -657,8 +709,34 @@ async function batchApply() {
         renderFindings();
         updateBatchBar();
         batchCancel();
+
+        // Reveal Rollback Button if it was a git repo
+        if (gitStatus.is_git) {
+            document.getElementById('batch-rollback-btn').style.display = 'inline-flex';
+        }
+
     } catch (e) {
         toast(`Batch fix failed: ${e.message}`, 'error');
+    }
+}
+
+function stopBatchLoading() {
+    if (currentBatchReqId) {
+        aegis.abort(currentBatchReqId);
+    }
+}
+
+async function rollbackBatch() {
+    try {
+        const result = await aegis.post('/api/git/rollback', { path: currentProjectPath });
+        if (result && result.success) {
+            toast('Successfully rolled back to pre-remediation state.', 'success');
+            document.getElementById('batch-rollback-btn').style.display = 'none';
+        } else {
+            toast(result?.error || 'Failed to rollback', 'error');
+        }
+    } catch (e) {
+        toast(`Error rolling back: ${e.message}`, 'error');
     }
 }
 

@@ -30,7 +30,14 @@
                 <span class="folder-icon">📁</span>
                 <span class="folder-path" id="folder-path">Select a project folder...</span>
             </button>
-            <button class="scan-btn" id="scan-btn" disabled>⛨ Scan</button>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <select id="ai-model-select" class="tb-btn" style="width: 170px; height: 32px; font-size: 11px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--gold); cursor: pointer; outline: none;">
+                    <option value="qwen2.5:7b">🤖 qwen2.5:7b (Deep Logic)</option>
+                    <option value="qwen2.5:0.5b">⚡ qwen2.5:0.5b (Fast)</option>
+                    <option value="llama3.2:1b">🦙 llama3.2:1b (Fast)</option>
+                </select>
+                <button class="scan-btn" id="scan-btn" disabled>⛨ Scan</button>
+            </div>
         </div>
 
         <!-- Content Area -->
@@ -121,8 +128,10 @@
             </div>
             <div class="batch-actions">
                 <button class="action-btn" id="batch-preview-btn">Preview All</button>
+                <button class="action-btn muted" id="batch-stop-btn" style="display:none; color:var(--orange);">⏹ Stop Loading</button>
                 <button class="action-btn primary" id="batch-apply-btn" style="display:none;">Apply All Fixes</button>
-                <button class="action-btn muted" id="batch-cancel-btn" style="display:none;">Cancel</button>
+                <button class="action-btn" id="batch-rollback-btn" style="display:none; color:var(--red); border-color:var(--red);">↺ Undo Batch</button>
+                <button class="action-btn muted" id="batch-cancel-btn" style="display:none;">Close</button>
             </div>
             <div class="batch-progress" id="batch-progress" style="display:none;">
                 <div class="batch-progress-bar" id="batch-progress-bar"></div>

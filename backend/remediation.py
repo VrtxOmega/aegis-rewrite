@@ -149,10 +149,25 @@ RULES = [
             '# Before (DANGEROUS)\n'
             'subprocess.call(f"process {filename}", shell=True)\n\n'
             '# After (SAFE)\n'
-            'subprocess.run(["process", filename], check=True)'
+            'subprocess.call(["process", filename], shell=False)'
         ),
-        'confidence': 0.90,
-        'docs': 'https://docs.python.org/3/library/subprocess.html#security-considerations',
+        'confidence': 0.85,
+        'docs': 'https://bandit.readthedocs.io/en/latest/plugins/b602_subprocess_popen_with_shell.html',
+    },
+
+    # ── Supply Chain Defenses ──
+    {
+        'category': 'Pinned Version Enforcement',
+        'title_pattern': re.compile(r'Unpinned dependency version', re.I),
+        'suggestion': 'Unpinned dependencies (caret/tilde) allow dangerous auto-updates which is how supply chain attacks propagate. Pin to an exact version. If a package-lock.json exists, Aegis will lock to the exact resolved version automatically; if not, run `npm install` to generate one first.',
+        'example_patch': (
+            '// Before (DANGEROUS)\n'
+            '"axios": "^1.14.0"\n\n'
+            '// After (SECURE)\n'
+            '"axios": "1.14.1" // Uses explicitly resolved package-lock.json version'
+        ),
+        'confidence': 0.95,
+        'docs': 'https://docs.npmjs.com/cli/v10/configuring-npm/package-json#dependencies'
     },
     {
         'category': 'Dangerous Function',

@@ -105,6 +105,8 @@ function createWindow() {
 // IPC HANDLERS
 // ═══════════════════════════════════════════
 
+const activeRequests = new Map();
+
 ipcMain.handle('backend:get', async (event, endpoint) => {
     try {
         const response = await fetch(`${FLASK_URL}${endpoint}`);
@@ -116,18 +118,33 @@ ipcMain.handle('backend:get', async (event, endpoint) => {
     }
 });
 
-ipcMain.handle('backend:post', async (event, endpoint, data) => {
+ipcMain.handle('backend:post', async (event, endpoint, data, reqId) => {
+    const controller = new AbortController();
+    if (reqId) activeRequests.set(reqId, controller);
+    
     try {
         const response = await fetch(`${FLASK_URL}${endpoint}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
+            signal: controller.signal
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await response.json();
     } catch (error) {
+        if (error.name === 'AbortError') return { abort: true, error: 'Aborted by user' };
         console.error(`[IPC] POST ${endpoint} failed:`, error.message);
         return { error: error.message };
+    } finally {
+        if (reqId) activeRequests.delete(reqId);
+    }
+});
+
+ipcMain.handle('backend:abort', (event, reqId) => {
+    const controller = activeRequests.get(reqId);
+    if (controller) {
+        controller.abort();
+        activeRequests.delete(reqId);
     }
 });
 

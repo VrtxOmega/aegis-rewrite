@@ -6,14 +6,23 @@ Cross-platform. No psutil, no WMI, no Windows-specific imports.
 import os
 import re
 import json
+import subprocess
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from scanner import scan_project, scan_project_streaming
+from scanner import scan_project, scan_project_streaming, scan_single_file
 from remediation import suggest_fix
 from resolution_db import finding_hash, get_resolution, set_resolution, get_resolutions
 from file_ops import safe_read_file, safe_write_file, preview_diff, get_backup_depth, set_backup_depth
 from ai_explain import explain_finding, explain_fix, check_ollama, generate_fix
+
+def is_safe_path(project_path, target_path):
+    "Validates that target_path belongs strictly within project_path."
+    if not project_path or not target_path:
+        return False
+    base = os.path.abspath(project_path)
+    target = os.path.abspath(target_path)
+    return target.startswith(base)
 
 
 app = Flask(__name__)
@@ -116,6 +125,57 @@ def get_resolutions_endpoint():
 
 
 # ═══════════════════════════════════════════
+# GIT OPERATIONS
+# ═══════════════════════════════════════════
+
+@app.route('/api/git/status', methods=['POST'])
+def git_status():
+    data = request.get_json() or {}
+    path = data.get('path', '')
+    if not os.path.isdir(path) or not os.path.isdir(os.path.join(path, '.git')):
+        return jsonify({'is_git': False, 'is_clean': True})
+    
+    try:
+        res = subprocess.run(['git', 'status', '--porcelain'], cwd=path, capture_output=True, text=True, check=True)
+        is_clean = len(res.stdout.strip()) == 0
+        return jsonify({'is_git': True, 'is_clean': is_clean, 'output': res.stdout})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/git/checkpoint', methods=['POST'])
+def git_checkpoint():
+    data = request.get_json() or {}
+    path = data.get('path', '')
+    if not os.path.isdir(os.path.join(path, '.git')):
+        return jsonify({'success': False, 'error': 'Not a git repo'})
+    
+    try:
+        subprocess.run(['git', 'add', '.'], cwd=path, check=True)
+        subprocess.run(['git', 'commit', '-m', '[AEGIS] Pre-remediation auto-checkpoint'], cwd=path, check=True)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/git/rollback', methods=['POST'])
+def git_rollback():
+    data = request.get_json() or {}
+    path = data.get('path', '')
+    if not os.path.isdir(os.path.join(path, '.git')):
+        return jsonify({'success': False, 'error': 'Not a git repo'})
+    
+    try:
+        res = subprocess.run(['git', 'log', '-1', '--pretty=%s'], cwd=path, capture_output=True, text=True, check=True)
+        msg = res.stdout.strip()
+        if msg == '[AEGIS] Pre-remediation auto-checkpoint':
+            subprocess.run(['git', 'reset', '--hard', 'HEAD~1'], cwd=path, check=True)
+            return jsonify({'success': True, 'rolled_back': True})
+        else:
+            return jsonify({'success': False, 'error': 'HEAD is not an AEGIS auto-checkpoint.'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════
 # FILE OPERATIONS
 # ═══════════════════════════════════════════
 
@@ -123,8 +183,13 @@ def get_resolutions_endpoint():
 def read_file():
     data = request.get_json() or {}
     filepath = data.get('path', '')
+    project_path = data.get('project_path', '')
+    
     if not filepath or not os.path.isfile(filepath):
         return jsonify({'error': 'File not found'}), 404
+        
+    if not is_safe_path(project_path, filepath):
+        return jsonify({'error': 'Path traversal blocked'}), 403
 
     try:
         lines, meta = safe_read_file(filepath)
@@ -308,6 +373,61 @@ def _fix_hardcoded_secret(line, finding, ctx):
     # Fallback: comment out with env var guidance
     return f"{indent}# FIXME [AEGIS]: Move to environment variable\n{indent}# {stripped}"
 
+def _fix_pinned_version(line, finding, project_path):
+    """
+    Looks up the actual version in package-lock.json if available and removes the caret.
+    """
+    import os
+    import json
+    
+    file_path = finding.get('file', '')
+    # The scanner provides absolute or relative paths. We can't easily guess the absolute root
+    # here without the project_path argument. However, because this runs server-side locally,
+    # and batch_fix provides project_path, we will try to resolve it.
+    
+    # Strip ^ and ~ from the version string as a fallback or explicit lock
+    match = re.search(r'([\'"])([\^~])([0-9]+\.[0-9]+\.[0-9]+.*)([\'"])', line)
+    if not match:
+        return line
+        
+    quote1, caret, version, quote2 = match.groups()
+    pkg_match = re.search(r'[\'"]([^\'"]+)[\'"]\s*:', line)
+    if not pkg_match:
+        return line
+        
+    pkg_name = pkg_match.group(1)
+    
+    # Optional logic: attempt to find package-lock.json in the CWD or parent if we can. 
+    # Because app.py runs in the context, we will simply drop the caret, locking it
+    # to the exact numeric version specified in the boundary (which matches `npm install` 
+    # generation behavior for lockfiles).
+    
+    if project_path:
+        lockfile = os.path.join(project_path, 'package-lock.json')
+        if os.path.isfile(lockfile):
+            try:
+                with open(lockfile, 'r', encoding='utf-8') as f:
+                    lock_data = json.load(f)
+                deps = lock_data.get('dependencies', {})
+                pkgs = lock_data.get('packages', {})
+                # Look in packages first (npm v2/v3 lockfiles structure)
+                resolved = pkgs.get(f"node_modules/{pkg_name}", {}).get("version")
+                # Fallback to older lockfile structure
+                if not resolved:
+                    resolved = deps.get(pkg_name, {}).get("version")
+                
+                if resolved:
+                    # Successfully pinned to exact resolved version
+                    line = re.sub(r'([\'"])(?:[\^~])([0-9]+\.[0-9]+\.[0-9]+.*)([\'"])', rf'\1{resolved}\3', line)
+                    return line
+            except Exception:
+                pass
+                
+    # If no lockfile or parsing failed, we fall back to just removing the caret
+    # which pins it to the boundary version.
+    line = re.sub(r'([\'"])(?:[\^~])([0-9]+\.[0-9]+\.[0-9]+.*)([\'"])', r'\1\2\3', line)
+    return line
+
 
 # ── DISPATCH TABLE ──
 # Maps (category, title_keyword) → handler function.
@@ -329,10 +449,12 @@ _PATTERN_DISPATCH = [
     ('Exposed Binding',    'cors wildcard',   _fix_cors_wildcard),
     # Secrets
     ('Hardcoded Secret',   None,              _fix_hardcoded_secret),  # None = match all titles in category
+    # Supply Chain
+    ('Pinned Version Enforcement', None,      _fix_pinned_version),
 ]
 
 
-def _apply_pattern_fix(line, finding):
+def _apply_pattern_fix(line, finding, project_path=None):
     """Dispatch-table pattern fixer.
     Returns the fixed line if a pattern matched and produced a change, else None.
     """
@@ -348,7 +470,13 @@ def _apply_pattern_fix(line, finding):
             continue
         if dispatch_key is not None and dispatch_key not in title_lower:
             continue
-        result = handler(line, finding, None)
+        
+        # Inject project_path if it's the pinned version logic
+        if handler == _fix_pinned_version:
+            result = handler(line, finding, project_path)
+        else:
+            result = handler(line, finding, None)
+            
         if result is not None and result != line:
             return result
 
@@ -447,7 +575,7 @@ def _title_to_detection_regex(title, category):
     return None
 
 
-def _get_fixed_line(filepath, lines, finding, line_num):
+def _get_fixed_line(filepath, lines, finding, line_num, project_path=None):
     """Two-tier fix pipeline: deterministic pattern first, AI rewrite fallback.
     Returns (fixed_line, method, actual_line_num) where method is 'pattern' or 'ai'.
     actual_line_num is 1-indexed and may differ from the input if line-shift was detected.
@@ -468,7 +596,7 @@ def _get_fixed_line(filepath, lines, finding, line_num):
     actual_line_num = actual_idx + 1  # 1-indexed
 
     # ── Tier 1: Deterministic pattern fix (instant) ──
-    pattern_fix = _apply_pattern_fix(actual_line, finding)
+    pattern_fix = _apply_pattern_fix(actual_line, finding, project_path)
     if pattern_fix is not None:
         return pattern_fix, 'pattern', actual_line_num
 
@@ -489,9 +617,13 @@ def preview():
     data = request.get_json() or {}
     filepath = data.get('path', '')
     finding = data.get('finding', {})
+    project_path = data.get('project_path', '')
 
     if not filepath or not os.path.isfile(filepath):
         return jsonify({'error': 'File not found'}), 404
+
+    if not is_safe_path(project_path, filepath):
+        return jsonify({'error': 'Path traversal blocked'}), 403
 
     try:
         lines, meta = safe_read_file(filepath)
@@ -512,7 +644,7 @@ def preview():
             return jsonify({'error': f'Line {line_num} out of range'}), 400
 
         original_line = lines[line_num - 1].rstrip('\r\n')
-        fixed_line, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num)
+        fixed_line, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num, project_path)
 
         if method is None:
             return jsonify({
@@ -555,6 +687,9 @@ def apply_fix():
     if not filepath or not os.path.isfile(filepath):
         return jsonify({'error': 'File not found'}), 404
 
+    if not is_safe_path(project_path, filepath):
+        return jsonify({'error': 'Path traversal blocked'}), 403
+
     try:
         lines, meta = safe_read_file(filepath)
         line_num = finding.get('line', 0)
@@ -567,7 +702,7 @@ def apply_fix():
             return jsonify({'error': f'Line {line_num} out of range'}), 400
 
         original_line = lines[line_num - 1].rstrip('\r\n')
-        fixed_line, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num)
+        fixed_line, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num, project_path)
 
         if method is None:
             return jsonify({'applied': False, 'reason': 'Could not generate a fix. Try again or fix manually.'})
@@ -579,6 +714,23 @@ def apply_fix():
             lines.insert(actual_line_num - 1 + i, extra_line + meta['newline_style'])
 
         result = safe_write_file(filepath, lines, meta)
+
+        # Real-time Verification Loop: Check if vulnerability survived
+        verification_failed = False
+        new_findings = scan_single_file(filepath, project_path)
+        for nf in new_findings:
+            if nf.get('category') == finding.get('category') and nf.get('title') == finding.get('title'):
+                verification_failed = True
+                break
+
+        if verification_failed:
+            import shutil
+            shutil.copy2(result['backup_path'], filepath)
+            return jsonify({
+                'applied': False,
+                'method': method,
+                'reason': 'Real-time Verification Failed: Vulnerability survived. Automatically rolled back.',
+            })
 
         # Mark as FIXED
         if project_path:
@@ -607,7 +759,12 @@ def batch_fix():
     files_modified = set()
 
     for finding in findings:
-        filepath = os.path.join(project_path, finding.get('file', ''))
+        filepath = os.path.abspath(os.path.join(project_path, finding.get('file', '')))
+        
+        if not is_safe_path(project_path, filepath):
+            results.append({'file': finding.get('file'), 'applied': False, 'reason': 'Path traversal blocked'})
+            continue
+
         if not os.path.isfile(filepath):
             results.append({'file': finding.get('file'), 'applied': False, 'reason': 'File not found'})
             continue
@@ -619,7 +776,7 @@ def batch_fix():
                 results.append({'file': finding.get('file'), 'applied': False, 'reason': 'File-level finding — needs .gitignore'})
                 continue
 
-            fixed, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num)
+            fixed, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num, project_path)
 
             if method is None:
                 results.append({'file': finding.get('file'), 'applied': False, 'reason': 'No fix available'})
@@ -631,7 +788,22 @@ def batch_fix():
             for i, extra in enumerate(fix_lines[1:], 1):
                 lines.insert(actual_line_num - 1 + i, extra + meta['newline_style'])
 
-            safe_write_file(filepath, lines, meta)
+            result = safe_write_file(filepath, lines, meta)
+
+            # Real-time Verification Loop
+            verification_failed = False
+            new_findings = scan_single_file(filepath, project_path)
+            for nf in new_findings:
+                if nf.get('category') == finding.get('category') and nf.get('title') == finding.get('title'):
+                    verification_failed = True
+                    break
+
+            if verification_failed:
+                import shutil
+                shutil.copy2(result['backup_path'], filepath)
+                results.append({'file': finding.get('file'), 'applied': False, 'reason': 'Verification Failed -> Reverted'})
+                continue
+
             files_modified.add(filepath)
 
             fhash = finding_hash(project_path, finding)

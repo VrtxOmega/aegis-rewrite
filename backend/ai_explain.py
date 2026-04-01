@@ -42,10 +42,10 @@ def check_ollama():
         return False
 
 
-def _generate(prompt, system=None, max_tokens=2000):
+def _generate(prompt, system=None, max_tokens=2000, model=MODEL):
     """Call Ollama generate endpoint."""
     payload = {
-        "model": MODEL,
+        "model": model,
         "prompt": prompt,
         "stream": False,
         "options": {"num_predict": max_tokens, "temperature": 0.3},
@@ -101,7 +101,8 @@ Detail: {finding.get('detail', 'No details')}
 
 Plain English explanation:"""
 
-    text = _generate(prompt, system=EXPLAIN_SYSTEM)
+    model = finding.get('model', MODEL)
+    text = _generate(prompt, system=EXPLAIN_SYSTEM, model=model)
     if text:
         return {'explanation': text, 'ai_available': True}
     return {'explanation': None, 'ai_available': False}
@@ -120,7 +121,8 @@ The suggested fix is:
 
 Explain in 2-3 plain English sentences what this fix does and why it addresses the security issue."""
 
-    text = _generate(prompt, system=EXPLAIN_SYSTEM, max_tokens=500)
+    model = finding.get('model', MODEL)
+    text = _generate(prompt, system=EXPLAIN_SYSTEM, max_tokens=500, model=model)
     if text:
         return {'explanation': text, 'ai_available': True}
     return {'explanation': None, 'ai_available': False}
@@ -180,7 +182,8 @@ SECURITY GUIDANCE:
 
 Output ONLY the fixed replacement for the vulnerable line. No explanation. No markdown. Just code:"""
 
-    result = _generate(prompt, system=REWRITE_SYSTEM, max_tokens=500)
+    model = finding.get('model', MODEL)
+    result = _generate(prompt, system=REWRITE_SYSTEM, max_tokens=500, model=model)
     
     if result:
         # Clean up AI output — strip markdown fences, backticks, leading/trailing whitespace

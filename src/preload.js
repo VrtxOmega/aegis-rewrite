@@ -6,7 +6,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('aegis', {
     get: (endpoint) => ipcRenderer.invoke('backend:get', endpoint),
-    post: (endpoint, data) => ipcRenderer.invoke('backend:post', endpoint, data),
+    post: (endpoint, data, reqId) => ipcRenderer.invoke('backend:post', endpoint, data, reqId),
+    abort: (reqId) => ipcRenderer.invoke('backend:abort', reqId),
     selectFolder: () => ipcRenderer.invoke('dialog:open-directory'),
     minimize: () => ipcRenderer.invoke('window:minimize'),
     maximize: () => ipcRenderer.invoke('window:maximize'),
