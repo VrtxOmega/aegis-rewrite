@@ -3,145 +3,231 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aegis ReWrite</title>
+    <title>Aegis ReWrite — Code Security Scanner</title>
+    <meta name="description" content="Aegis ReWrite: AI-powered code vulnerability scanner and one-click remediation engine.">
     <link rel="stylesheet" href="style.css">
+    <!-- Prism.js syntax highlighting -->
+    <link rel="stylesheet" href="assets/prism-tomorrow.min.css">
 </head>
 <body>
-    <!-- Custom Titlebar -->
-    <div class="titlebar">
-        <div class="titlebar-drag">
-            <span class="titlebar-icon">⛨</span>
-            <span class="titlebar-title">Aegis ReWrite</span>
-            <span class="titlebar-ai-badge" id="ai-badge" title="Ollama AI status">AI</span>
-        </div>
-        <div class="titlebar-controls">
-            <button class="tb-btn" onclick="aegis.minimize()">─</button>
-            <button class="tb-btn" onclick="aegis.maximize()">☐</button>
-            <button class="tb-btn tb-close" onclick="aegis.close()">✕</button>
-        </div>
-    </div>
+<div id="app">
 
-    <!-- Main Layout -->
-    <div class="app-container">
-
-        <!-- Top Bar: Folder + Scan -->
-        <div class="top-bar">
-            <button class="folder-btn" id="select-folder-btn">
-                <span class="folder-icon">📁</span>
-                <span class="folder-path" id="folder-path">Select a project folder...</span>
+    <!-- ═══════════════════════════ TITLEBAR ═══════════════════════════ -->
+    <div id="titlebar" role="banner">
+        <span class="titlebar-logo" aria-hidden="true">⛨</span>
+        <span class="titlebar-title">Aegis ReWrite</span>
+        <span id="scan-badge" class="titlebar-badge" aria-live="polite">
+            <span class="titlebar-badge-dot" aria-hidden="true"></span>
+            <span id="badge-text">Scanning</span>
+        </span>
+        <div class="titlebar-spacer"></div>
+        <div class="title-actions">
+            <!-- Export findings -->
+            <button id="export-btn" class="title-action-btn" aria-label="Export findings" title="Export findings as JSON or CSV" disabled>
+                <span aria-hidden="true">↓</span> Export
             </button>
-            <div style="display: flex; gap: 8px; align-items: center;">
-                <select id="ai-model-select" class="tb-btn" style="width: 170px; height: 32px; font-size: 11px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--gold); cursor: pointer; outline: none;">
-                    <option value="qwen2.5:7b">🤖 qwen2.5:7b (Deep Logic)</option>
-                    <option value="qwen2.5:0.5b">⚡ qwen2.5:0.5b (Fast)</option>
-                    <option value="llama3.2:1b">🦙 llama3.2:1b (Fast)</option>
+            <!-- Settings gear -->
+            <button id="settings-btn" class="title-action-btn" aria-label="Open settings" title="Settings">
+                <span aria-hidden="true">⚙</span>
+            </button>
+        </div>
+        <nav class="win-controls" aria-label="Window controls">
+            <button class="win-btn" id="btn-minimize" aria-label="Minimize window" title="Minimize">─</button>
+            <button class="win-btn" id="btn-maximize" aria-label="Maximize window" title="Maximize">□</button>
+            <button class="win-btn close" id="btn-close" aria-label="Close window" title="Close">✕</button>
+        </nav>
+    </div>
+
+    <!-- ════════════════════════════ TOOLBAR ═══════════════════════════ -->
+    <div id="toolbar" role="toolbar" aria-label="Scan controls">
+        <input
+            id="folder-path-input"
+            type="text"
+            placeholder="Select or drop a project folder…"
+            readonly
+            aria-label="Selected project folder path"
+            title="Project folder path"
+        >
+        <button id="browse-btn" class="toolbar-btn" aria-label="Browse for project folder">
+            <span aria-hidden="true">📁</span> Browse
+        </button>
+        <button id="scan-btn" class="toolbar-btn" aria-label="Start security scan" title="Scan the selected project for vulnerabilities">
+            <span aria-hidden="true">⛨</span> Scan
+        </button>
+    </div>
+
+    <!-- ══════════════════════════ SCAN PROGRESS ═══════════════════════ -->
+    <div id="scan-progress" role="status" aria-live="polite" aria-label="Scan progress">
+        <div class="progress-label">
+            <span id="progress-file">Initializing scan…</span>
+            <span id="progress-pct">0%</span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+        </div>
+    </div>
+
+    <!-- Findings content area -->
+    <div id="content-area">
+
+        <!-- ══════════════════════ FINDINGS PANEL ══════════════════════ -->
+        <div id="findings-panel" aria-label="Security findings">
+
+            <!-- Filter Bar -->
+            <div id="filter-bar" role="group" aria-label="Filter findings by severity">
+                <span id="scan-summary" aria-live="polite">No scan yet</span>
+                <button class="filter-btn active" data-sev="CRITICAL" aria-label="Filter CRITICAL findings" aria-pressed="true">
+                    CRITICAL <span id="count-critical">0</span>
+                </button>
+                <button class="filter-btn active" data-sev="HIGH" aria-label="Filter HIGH findings" aria-pressed="true">
+                    HIGH <span id="count-high">0</span>
+                </button>
+                <button class="filter-btn active" data-sev="MEDIUM" aria-label="Filter MEDIUM findings" aria-pressed="true">
+                    MED <span id="count-medium">0</span>
+                </button>
+                <button class="filter-btn active" data-sev="LOW" aria-label="Filter LOW findings" aria-pressed="true">
+                    LOW <span id="count-low">0</span>
+                </button>
+                <div class="filter-spacer"></div>
+                <select id="sort-select" class="sort-select" aria-label="Sort findings by">
+                    <option value="severity">By Severity</option>
+                    <option value="file">By File</option>
+                    <option value="category">By Category</option>
                 </select>
-                <button class="scan-btn" id="scan-btn" disabled>⛨ Scan</button>
             </div>
+
+            <!-- Findings List -->
+            <ul id="findings-list" role="list" aria-label="Security findings list" tabindex="0">
+                <li id="empty-state" role="listitem">
+                    <div style="display:contents">
+                        <div class="empty-icon" aria-hidden="true">⛨</div>
+                        <div class="empty-title">Nothing to scan yet</div>
+                        <div class="empty-body">
+                            Select a project folder and click <strong>Scan</strong> to detect security vulnerabilities.
+                        </div>
+                        <div class="empty-hint" aria-label="Tip: drag and drop a folder">
+                            <span aria-hidden="true">💡</span> Drag &amp; drop a folder to start
+                        </div>
+                    </div>
+                </li>
+            </ul>
         </div>
 
-        <!-- Content Area -->
-        <div class="content-area">
+        <!-- ══════════════════════ RESIZE HANDLE ═══════════════════════ -->
+        <div id="resize-handle" role="separator" aria-orientation="vertical" title="Drag to resize panels" aria-label="Resize panels"></div>
 
-            <!-- Left: Findings List -->
-            <div class="findings-panel glass-panel">
-                <div class="panel-header">
-                    <h2>Findings <span class="badge" id="findings-count">0</span></h2>
-                    <div class="severity-filters" id="severity-filters"></div>
-                </div>
-                <div class="scan-summary" id="scan-summary" style="display:none;"></div>
-                
-                <!-- Scan Progress overlay -->
-                <div id="scan-progress-container" style="display:none; padding: 20px; flex-direction: column; gap: 12px;">
-                    <div style="font-size: 13px; font-weight: 600; color: var(--gold);" id="scan-progress-status">Preparing scan...</div>
-                    <div class="batch-progress" style="display: block; margin: 0;">
-                        <div class="batch-progress-bar" id="scan-progress-bar" style="width: 0%;"></div>
-                    </div>
-                    <div style="font-size: 11px; color: var(--text-muted); font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" id="scan-progress-file">...</div>
-                </div>
-
-                <div class="findings-list" id="findings-list">
-                    <div class="empty-state">
-                        <div class="empty-icon">🔍</div>
-                        <p>Select a folder and scan to find vulnerabilities</p>
-                    </div>
-                </div>
+        <!-- ══════════════════════ DETAIL PANEL ════════════════════════ -->
+        <div id="detail-panel" aria-label="Finding details" aria-live="polite">
+            <div id="detail-empty">
+                <div class="de-icon" aria-hidden="true">⛨</div>
+                <span>Select a finding to inspect</span>
             </div>
-
-            <!-- Right: Detail / Code View -->
-            <div class="detail-panel glass-panel">
-                <div class="detail-placeholder" id="detail-placeholder">
-                    <div class="empty-icon">📋</div>
-                    <p>Select a finding to see details</p>
-                </div>
-                <div class="detail-content" id="detail-content" style="display:none;">
-                    <div class="detail-header">
-                        <span class="detail-severity" id="detail-severity"></span>
-                        <span class="detail-title" id="detail-title"></span>
-                    </div>
-                    <div class="detail-meta" id="detail-meta"></div>
-
-                    <!-- AI Explanation -->
-                    <div class="ai-section" id="ai-section" style="display:none;">
-                        <div class="ai-header">
-                            <span class="ai-icon">🤖</span>
-                            <span>AI Explanation</span>
-                            <button class="ai-refresh-btn" id="ai-refresh-btn" title="Regenerate">↻</button>
-                        </div>
-                        <div class="ai-body" id="ai-body">Loading...</div>
-                    </div>
-
-                    <!-- Remediation -->
-                    <div class="remediation-section">
-                        <h3>Suggested Fix</h3>
-                        <div class="remediation-text" id="remediation-text"></div>
-                        <pre class="remediation-patch" id="remediation-patch"></pre>
-                        <div class="remediation-meta">
-                            <span class="confidence-badge" id="confidence-badge"></span>
-                            <a class="docs-link" id="docs-link" target="_blank">📖 Docs</a>
-                        </div>
-                    </div>
-
-                    <!-- Code + Diff -->
-                    <div class="code-section">
-                        <div class="code-header">
-                            <h3>Code Preview</h3>
-                            <div class="code-actions">
-                                <button class="action-btn" id="preview-diff-btn">👁 Preview Diff</button>
-                                <button class="action-btn primary" id="apply-fix-btn">⚡ Apply Fix</button>
-                                <button class="action-btn muted" id="ignore-btn">Skip</button>
-                            </div>
-                        </div>
-                        <pre class="code-block" id="code-block"></pre>
-                        <div class="diff-block" id="diff-block" style="display:none;"></div>
-                        <div class="fix-status" id="fix-status"></div>
-                    </div>
-                </div>
-            </div>
+            <div id="detail-scroll" style="display:none"></div>
         </div>
 
-        <!-- Bottom: Batch Fix Bar -->
-        <div class="batch-bar" id="batch-bar" style="display:none;">
-            <div class="batch-info">
-                <span class="batch-icon">⚡</span>
-                <span class="batch-label" id="batch-label"></span>
+    </div><!-- /#content-area -->
+
+    <!-- ════════════════════════ BATCH FIX BAR ════════════════════════ -->
+    <div id="batch-bar" aria-live="assertive">
+        <span id="batch-count" class="batch-count" aria-label="Number of selected findings">0 selected</span>
+        <span id="batch-info" class="batch-info"></span>
+        <div id="batch-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="batch-progress-bar" style="width:0%"></div>
+        </div>
+        <button id="batch-preview-btn" class="action-btn" aria-label="Preview all selected fixes">
+            👁 Preview All Fixes
+        </button>
+        <button id="batch-fix-btn" class="action-btn primary" aria-label="Apply fixes to all selected findings">
+            ⚡ Fix All Selected
+        </button>
+        <button id="batch-clear-btn" class="action-btn" aria-label="Clear selection">Clear</button>
+    </div>
+
+    <!-- ════════════════════════ TOAST CONTAINER ═══════════════════════ -->
+    <div id="toast-container" aria-live="polite" aria-label="Notifications"></div>
+
+    <!-- ═══════════════════════ DRAG OVERLAY ══════════════════════════ -->
+    <div id="drag-overlay" aria-hidden="true">
+        <div class="drag-icon">📂</div>
+        <div>Drop project folder here</div>
+    </div>
+
+    <!-- ═══════════════════════ EXPORT MENU ═══════════════════════════ -->
+    <div id="export-menu" class="export-menu" role="menu" aria-label="Export options">
+        <div class="export-item" role="menuitem" data-fmt="json" tabindex="0">
+            <span aria-hidden="true">{ }</span> Export as JSON
+        </div>
+        <div class="export-item" role="menuitem" data-fmt="csv" tabindex="0">
+            <span aria-hidden="true">≡</span> Export as CSV
+        </div>
+    </div>
+
+    <!-- ═════════════════════ SETTINGS MODAL ══════════════════════════ -->
+    <div id="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="modal-card">
+            <div class="modal-header">
+                <span id="settings-title" class="modal-title">⚙ Settings</span>
+                <button id="settings-close" class="modal-close" aria-label="Close settings">✕</button>
             </div>
-            <div class="batch-actions">
-                <button class="action-btn" id="batch-preview-btn">Preview All</button>
-                <button class="action-btn muted" id="batch-stop-btn" style="display:none; color:var(--orange);">⏹ Stop Loading</button>
-                <button class="action-btn primary" id="batch-apply-btn" style="display:none;">Apply All Fixes</button>
-                <button class="action-btn" id="batch-rollback-btn" style="display:none; color:var(--red); border-color:var(--red);">↺ Undo Batch</button>
-                <button class="action-btn muted" id="batch-cancel-btn" style="display:none;">Close</button>
+            <div class="modal-body">
+
+                <!-- Backup Chain Depth -->
+                <div class="setting-row">
+                    <label class="setting-label" for="backup-depth-slider">Backup Chain Depth</label>
+                    <div class="setting-description">Number of historical backups kept per file during fixes (1–10).</div>
+                    <div class="setting-control">
+                        <input
+                            type="range" id="backup-depth-slider" min="1" max="10" value="3"
+                            class="depth-slider" aria-label="Backup depth"
+                        >
+                        <span id="backup-depth-value" class="depth-value">3</span>
+                    </div>
+                </div>
+
+                <!-- Editor Preference -->
+                <div class="setting-row">
+                    <label class="setting-label" for="editor-pref-select">Open in Editor</label>
+                    <div class="setting-description">Which editor to launch when clicking a file path.</div>
+                    <div class="setting-control">
+                        <select id="editor-pref-select" class="editor-select" aria-label="Editor preference">
+                            <option value="vscode">VS Code</option>
+                            <option value="cursor">Cursor</option>
+                            <option value="none">None (copy path)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- AI Model Selection -->
+                <div class="setting-row">
+                    <div class="setting-label">AI Model</div>
+                    <div class="setting-description">Ollama model used for explanations and code rewrites.</div>
+                    <div class="setting-control model-selector">
+                        <div id="ai-status-dot" class="ai-status-dot offline" aria-label="Ollama status: offline"></div>
+                        <select id="model-select" class="model-select" aria-label="AI model selection">
+                            <option value="qwen3:8b">qwen3:8b</option>
+                            <option value="qwen2.5:7b">qwen2.5:7b</option>
+                            <option value="qwen2.5:0.5b">qwen2.5:0.5b</option>
+                            <option value="llama3.2:1b">llama3.2:1b</option>
+                        </select>
+                    </div>
+                </div>
+
             </div>
-            <div class="batch-progress" id="batch-progress" style="display:none;">
-                <div class="batch-progress-bar" id="batch-progress-bar"></div>
+            <div class="modal-footer">
+                <button id="settings-cancel-btn" class="action-btn" aria-label="Cancel settings changes">Cancel</button>
+                <button id="settings-save-btn" class="action-btn primary" aria-label="Save settings">Save Settings</button>
             </div>
         </div>
     </div>
 
-    <!-- Toast container -->
-    <div class="toast-container" id="toast-container"></div>
+</div><!-- /#app -->
 
-    <script src="renderer.js"></script>
+<!-- Prism.js for syntax highlighting -->
+<script src="assets/prism.min.js"></script>
+<script src="assets/prism-python.min.js"></script>
+<script src="assets/prism-javascript.min.js"></script>
+<script src="assets/prism-yaml.min.js"></script>
+
+<script src="renderer.js"></script>
 </body>
 </html>

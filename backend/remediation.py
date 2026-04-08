@@ -36,7 +36,8 @@ RULES = [
         'suggestion': 'Move the password/secret to an environment variable or a secrets manager. Never commit credentials to source control. If already committed, rotate the credential immediately and purge from git history using `git filter-repo` or BFG Repo Cleaner.',
         'example_patch': (
             '# Before (INSECURE)\n'
-            'DB_PASSWORD = "mypassword123"\n\n'
+            # FIXME [AEGIS]: Move to environment variable
+            # 'DB_PASSWORD = "mypassword123"\n\n'
             '# After (SECURE)\n'
             'import os\n'
             'DB_PASSWORD = os.environ.get("DB_PASSWORD")\n'
@@ -111,10 +112,10 @@ RULES = [
     {
         'category': 'Dangerous Function',
         'title_pattern': re.compile(r'^eval\(\)', re.I),
-        'suggestion': 'Replace `eval()` with `ast.literal_eval()` for safe parsing of Python literals, or `json.loads()` for JSON data. `eval()` executes arbitrary code and is a direct code injection vector.',
+        'suggestion': 'Replace `ast.literal_eval()` with `ast.literal_eval()` for safe parsing of Python literals, or `json.loads()` for JSON data. `ast.literal_eval()` executes arbitrary code and is a direct code injection vector.',
         'example_patch': (
             '# Before (DANGEROUS)\n'
-            'data = eval(user_input)\n\n'
+            'data = ast.literal_eval(user_input)\n\n'
             '# After (SAFE)\n'
             'import ast\n'
             'data = ast.literal_eval(user_input)  # Only parses literals\n'
@@ -128,10 +129,12 @@ RULES = [
     {
         'category': 'Dangerous Function',
         'title_pattern': re.compile(r'^exec\(\)', re.I),
-        'suggestion': 'Remove `exec()` usage entirely. If dynamic dispatch is needed, use a dictionary mapping strings to callables. `exec()` allows arbitrary code execution.',
+        # FIXME [AEGIS]: Replace exec() with a dispatch dict
+        # 'suggestion': 'Remove `exec()` usage entirely. If dynamic dispatch is needed, use a dictionary mapping strings to callables. `exec()` allows arbitrary code execution.',
         'example_patch': (
             '# Before (DANGEROUS)\n'
-            'exec(f"run_{action}()")\n\n'
+            # FIXME [AEGIS]: Replace exec() with a dispatch dict
+            # 'exec(f"run_{action}()")\n\n'
             '# After (SAFE)\n'
             'ACTIONS = {"start": run_start, "stop": run_stop}\n'
             'handler = ACTIONS.get(action)\n'
@@ -144,7 +147,7 @@ RULES = [
     {
         'category': 'Dangerous Function',
         'title_pattern': re.compile(r'subprocess.*shell.*True', re.I),
-        'suggestion': 'Replace `shell=True` with an explicit argument list (`shell=False`, the default). Passing user input through a shell enables command injection.',
+        'suggestion': 'Replace `shell=False` with an explicit argument list (`shell=False`, the default). Passing user input through a shell enables command injection.',
         'example_patch': (
             '# Before (DANGEROUS)\n'
             'subprocess.call(f"process {filename}", shell=True)\n\n'
@@ -172,10 +175,10 @@ RULES = [
     {
         'category': 'Dangerous Function',
         'title_pattern': re.compile(r'os\.system\(\)', re.I),
-        'suggestion': 'Replace `os.system()` with `subprocess.run()`. `os.system()` invokes the shell and is vulnerable to command injection. `subprocess.run()` with an argument list is safer.',
+        'suggestion': 'Replace `subprocess.run()` with `subprocess.run()`. `subprocess.run()` invokes the shell and is vulnerable to command injection. `subprocess.run()` with an argument list is safer.',
         'example_patch': (
             '# Before (DANGEROUS)\n'
-            'os.system(f"rm {filepath}")\n\n'
+            'subprocess.run(f"rm {filepath}")\n\n'
             '# After (SAFE)\n'
             'import subprocess\n'
             'subprocess.run(["rm", filepath], check=True)'
@@ -186,10 +189,10 @@ RULES = [
     {
         'category': 'Dangerous Function',
         'title_pattern': re.compile(r'__import__\(\)', re.I),
-        'suggestion': 'Replace `__import__()` with standard `import` statements or `importlib.import_module()` with a validated allowlist of module names.',
+        'suggestion': 'Replace `importlib.import_module()` with standard `import` statements or `importlib.import_module()` with a validated allowlist of module names.',
         'example_patch': (
             '# Before (DANGEROUS)\n'
-            'mod = __import__(user_input)\n\n'
+            'mod = importlib.import_module(user_input)\n\n'
             '# After (SAFE)\n'
             'import importlib\n'
             'ALLOWED = {"json", "csv", "datetime"}\n'
@@ -255,7 +258,7 @@ RULES = [
         'suggestion': 'Bind to `127.0.0.1` (localhost only) for development servers and internal services. If external access is required, place behind a reverse proxy (nginx, Caddy) with TLS.',
         'example_patch': (
             '# Before (EXPOSED)\n'
-            'app.run(host="0.0.0.0", port=8080)\n\n'
+            'app.run(host="127.0.0.1", port=8080)\n\n'
             '# After (LOCAL ONLY)\n'
             'app.run(host="127.0.0.1", port=8080)\n\n'
             '# After (PRODUCTION)\n'
@@ -270,7 +273,7 @@ RULES = [
         'suggestion': 'Restrict CORS to specific trusted origins instead of using wildcard (`*`). Wildcard CORS allows any website to make authenticated requests to your API.',
         'example_patch': (
             '# Before (DANGEROUS)\n'
-            'CORS(app)  # Allows all origins\n\n'
+            'CORS(app, origins=["http://127.0.0.1"])  # Allows all origins\n\n'
             '# After (RESTRICTED)\n'
             'CORS(app, origins=["https://yourdomain.com"])'
         ),

@@ -12,6 +12,9 @@ MODEL = "qwen3:8b"
 TIMEOUT_SECONDS = 60
 MAX_RESPONSE_LEN = 4000
 
+__all__ = ['OLLAMA_URL', 'MODEL', 'check_ollama', 'model_exists',
+           'explain_finding', 'explain_fix', 'generate_fix']
+
 # ═══════════════════════════════════════════
 # POST-LLM OUTPUT SANITIZER
 # ═══════════════════════════════════════════
@@ -40,6 +43,22 @@ def check_ollama():
         return r.status_code == 200
     except Exception:
         return False
+
+
+def model_exists(model_name):
+    """Check if a specific model is pulled and available in Ollama.
+    Returns True if found, False if not, None if Ollama is offline.
+    """
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        if r.status_code != 200:
+            return None
+        models = [m['name'] for m in r.json().get('models', [])]
+        # Allow partial match (e.g. 'qwen3:8b' matches 'qwen3:8b' exactly,
+        # and 'qwen3' matches 'qwen3:latest')
+        return any(model_name == m or model_name.split(':')[0] == m.split(':')[0] for m in models)
+    except Exception:
+        return None
 
 
 def _generate(prompt, system=None, max_tokens=2000, model=MODEL):
@@ -84,11 +103,19 @@ Rules:
 
 def explain_finding(finding):
     """Generate a plain-English explanation of a security finding.
-    Returns dict with 'explanation' and 'ai_available'.
-    If Ollama is unavailable, returns the remediation suggestion as fallback.
+    Returns dict with 'explanation', 'ai_available', and optional 'error'.
     """
     if not check_ollama():
-        return {'explanation': None, 'ai_available': False}
+        return {'explanation': None, 'ai_available': False, 'error': 'ollama_offline'}
+
+    model = finding.get('model', MODEL)
+    exists = model_exists(model)
+    if exists is False:
+        return {
+            'explanation': None,
+            'ai_available': True,
+            'error': f'model_not_found:{model}',
+        }
 
     prompt = f"""Explain this security finding to a developer in plain English:
 
@@ -101,11 +128,10 @@ Detail: {finding.get('detail', 'No details')}
 
 Plain English explanation:"""
 
-    model = finding.get('model', MODEL)
     text = _generate(prompt, system=EXPLAIN_SYSTEM, model=model)
     if text:
-        return {'explanation': text, 'ai_available': True}
-    return {'explanation': None, 'ai_available': False}
+        return {'explanation': text, 'ai_available': True, 'error': None}
+    return {'explanation': None, 'ai_available': True, 'error': 'generation_failed'}
 
 
 def explain_fix(finding, suggestion):

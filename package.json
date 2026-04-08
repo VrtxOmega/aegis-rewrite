@@ -41,7 +41,7 @@
   "author": "RJ Lopez",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^28.0.0",
+    "electron": "28.0.0",
     "electron-builder": "^25.1.8"
   }
 }

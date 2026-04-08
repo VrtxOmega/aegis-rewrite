@@ -35,8 +35,11 @@ def _init_db():
 
 
 def finding_hash(project_path, finding):
-    """Deterministic hash from immutable finding properties."""
-    raw = f"{project_path}|{finding.get('file','')}|{finding.get('line','')}|{finding.get('category','')}|{finding.get('title','')}"
+    """Deterministic hash from stable finding properties.
+    LINE NUMBER intentionally excluded — it shifts after fixes are applied.
+    Only file, category, and title are stable identifiers.
+    """
+    raw = f"{project_path}|{finding.get('file','')}|{finding.get('category','')}|{finding.get('title','')}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 

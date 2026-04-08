@@ -7,6 +7,10 @@ const path = require('path');
 const { spawn } = require('child_process');
 const http = require('http');
 
+// CRITICAL: Disable Electron's file cache so CSS/JS changes always load from disk
+app.commandLine.appendSwitch('disable-http-cache');
+app.commandLine.appendSwitch('disable-gpu-shader-disk-cache');
+
 const FLASK_PORT = 5055;
 const FLASK_URL = `http://127.0.0.1:${FLASK_PORT}`;
 let flaskProcess = null;
@@ -51,6 +55,7 @@ function startFlask() {
         cwd: backendDir,
         env: { ...process.env, PYTHONUNBUFFERED: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
     });
 
     flaskProcess.stdout.on('data', d => console.log(`[Flask] ${d}`));
@@ -96,7 +101,10 @@ function createWindow() {
         },
     });
 
-    mainWindow.loadFile(path.join(__dirname, 'index.html'));
+    // Clear cached CSS/JS so edits always take effect on restart
+    mainWindow.webContents.session.clearCache().then(() => {
+        mainWindow.loadFile(path.join(__dirname, 'index.html'));
+    });
 
     mainWindow.on('closed', () => { mainWindow = null; });
 }
@@ -163,6 +171,53 @@ ipcMain.handle('window:maximize', () => {
     else mainWindow?.maximize();
 });
 ipcMain.handle('window:close', () => mainWindow?.close());
+
+// ── App state persistence ──
+const fs = require('fs');
+const PREFS_PATH = path.join(app.getPath('userData'), 'aegis-prefs.json');
+
+function loadPrefs() {
+    try {
+        return JSON.parse(fs.readFileSync(PREFS_PATH, 'utf8'));
+    } catch { return {}; }
+}
+
+function savePrefs(prefs) {
+    fs.writeFileSync(PREFS_PATH, JSON.stringify(prefs, null, 2));
+}
+
+ipcMain.handle('app:getPlatform', () => process.platform);
+
+ipcMain.handle('app:getLastFolder', () => {
+    return loadPrefs().lastFolder || null;
+});
+
+ipcMain.handle('app:saveLastFolder', (event, folderPath) => {
+    const prefs = loadPrefs();
+    prefs.lastFolder = folderPath;
+    savePrefs(prefs);
+});
+
+ipcMain.handle('app:getEditorPref', () => {
+    return loadPrefs().editorPref || 'vscode';
+});
+
+ipcMain.handle('app:saveEditorPref', (event, pref) => {
+    const prefs = loadPrefs();
+    prefs.editorPref = pref;
+    savePrefs(prefs);
+});
+
+ipcMain.handle('editor:open', async (event, filePath, line) => {
+    const prefs = loadPrefs();
+    const editor = prefs.editorPref || 'vscode';
+    const { exec } = require('child_process');
+    if (editor === 'vscode') {
+        exec(`code --goto "${filePath}:${line || 1}"`);
+    } else if (editor === 'cursor') {
+        exec(`cursor --goto "${filePath}:${line || 1}"`);
+    }
+});
 
 // ═══════════════════════════════════════════
 // APP LIFECYCLE

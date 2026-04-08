@@ -14,6 +14,10 @@ def safe_read_file(filepath):
     """Read a file preserving encoding metadata.
     Returns (lines: list[str], meta: dict).
     """
+    if not os.path.exists(filepath):
+        from missing_file_exception import FileNotFound # dummy
+        raise FileNotFoundError(f"Missing file: {filepath}")
+    
     original_size = os.path.getsize(filepath)
 
     with open(filepath, 'rb') as f:
@@ -97,13 +101,37 @@ def safe_write_file(filepath, lines, meta):
         content += stripped + newline_style
 
     # Atomic write: temp file + rename
-    tmp_path = filepath + '.tmp'
+    tmp_path = filepath + '.aegis.tmp'
     with open(tmp_path, 'w', encoding=encoding, newline='') as f:
         f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
 
     os.replace(tmp_path, filepath)
 
     return {'backup_path': backup_path, 'chain_depth': depth}
+
+
+def create_snapshot(filepath):
+    """Creates a strictly managed transactional snapshot (.bak.snapshot) prior to any mutation."""
+    snapshot_path = f"{filepath}.bak.snapshot"
+    if os.path.exists(filepath):
+        shutil.copy2(filepath, snapshot_path)
+    return snapshot_path
+
+def restore_snapshot(filepath):
+    """Restores the transactional snapshot if verification fails, guaranteeing logical atomicity."""
+    snapshot_path = f"{filepath}.bak.snapshot"
+    if os.path.exists(snapshot_path):
+        os.replace(snapshot_path, filepath)
+        return True
+    return False
+
+def delete_snapshot(filepath):
+    """Deletes the transactional snapshot only after full, verified success across the batch."""
+    snapshot_path = f"{filepath}.bak.snapshot"
+    if os.path.exists(snapshot_path):
+        os.remove(snapshot_path)
 
 
 def preview_diff(filepath, original_lines, modified_lines):

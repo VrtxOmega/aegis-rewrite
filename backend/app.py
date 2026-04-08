@@ -7,25 +7,42 @@ import os
 import re
 import json
 import subprocess
-from flask import Flask, jsonify, request
+import requests as _requests
+from datetime import datetime
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 
-from scanner import scan_project, scan_project_streaming, scan_single_file
+from scanner import scan_project, scan_project_streaming, scan_single_file, _scan_file_content, SCAN_EXTENSIONS
 from remediation import suggest_fix
 from resolution_db import finding_hash, get_resolution, set_resolution, get_resolutions
-from file_ops import safe_read_file, safe_write_file, preview_diff, get_backup_depth, set_backup_depth
-from ai_explain import explain_finding, explain_fix, check_ollama, generate_fix
+from file_ops import safe_read_file, safe_write_file, preview_diff, get_backup_depth, set_backup_depth, create_snapshot, restore_snapshot, delete_snapshot
+from ai_explain import explain_finding, explain_fix, check_ollama, generate_fix, OLLAMA_URL
+
+AEGIS_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def is_safe_path(project_path, target_path):
-    "Validates that target_path belongs strictly within project_path."
+    """Validate target_path is strictly inside project_path.
+    Uses os.path.commonpath to prevent traversal on Windows paths.
+    """
     if not project_path or not target_path:
         return False
-    base = os.path.abspath(project_path)
-    target = os.path.abspath(target_path)
-    return target.startswith(base)
+    try:
+        base = os.path.realpath(os.path.abspath(project_path))
+        target = os.path.realpath(os.path.abspath(target_path))
+        
+        # Target Boundary Invariant: self-shielding logic unless explicitly in DEV_MODE
+        if target.startswith(AEGIS_ROOT):
+            if os.environ.get('AEGIS_DEV_MODE') != '1':
+                return False
+                
+        return os.path.commonpath([base, target]) == base
+    except (ValueError, OSError):
+        # ValueError on Windows when paths are on different drives
+        return False
 
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB request limit
 CORS(app, origins=["http://127.0.0.1", "http://localhost"])
 
 
@@ -42,8 +59,12 @@ def health():
 # SCANNER
 # ═══════════════════════════════════════════
 
-import json
-from flask import Flask, jsonify, request, Response
+def _enrich_findings(findings, project_path):
+    """Add backend-computed _hash to each finding so frontend never hashes locally."""
+    for f in findings:
+        f['_hash'] = finding_hash(project_path, f)
+    return findings
+
 
 @app.route('/api/scan', methods=['POST'])
 def scan():
@@ -52,19 +73,30 @@ def scan():
     if not path or not os.path.isdir(path):
         return jsonify({'error': 'Invalid path'}), 400
     result = scan_project(path)
+    result['findings'] = _enrich_findings(result.get('findings', []), path)
     return jsonify(result)
 
 @app.route('/api/scan/stream', methods=['GET'])
 def scan_stream():
     path = request.args.get('path', '')
     if not path or not os.path.isdir(path):
-        return Response(f"data: {json.dumps({'type': 'error', 'message': 'Invalid path'})}\n\n", mimetype='text/event-stream')
+        return Response(
+            f"data: {json.dumps({'type': 'error', 'message': 'Invalid path'})}\n\n",
+            mimetype='text/event-stream'
+        )
 
     def generate():
         for event in scan_project_streaming(path):
+            # Enrich findings in the complete event so frontend gets _hash values
+            if event.get('type') == 'complete':
+                event['findings'] = _enrich_findings(event.get('findings', []), path)
             yield f"data: {json.dumps(event)}\n\n"
-    
-    return Response(generate(), mimetype='text/event-stream')
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'}
+    )
 
 
 # ═══════════════════════════════════════════
@@ -72,6 +104,7 @@ def scan_stream():
 # ═══════════════════════════════════════════
 
 @app.route('/api/suggest', methods=['POST'])
+@app.route('/api/remediation/suggest', methods=['POST'])
 def suggest():
     finding = request.get_json() or {}
     result = suggest_fix(finding)
@@ -85,6 +118,20 @@ def suggest():
 @app.route('/api/ai/status')
 def ai_status():
     return jsonify({'available': check_ollama()})
+
+
+@app.route('/api/ai/models')
+def ai_models():
+    """Return list of Ollama models actually installed on this machine."""
+    try:
+        r = _requests.get(f'{OLLAMA_URL}/api/tags', timeout=3)
+        if r.status_code == 200:
+            models_raw = r.json().get('models', [])
+            model_names = [m['name'] for m in models_raw]
+            return jsonify({'models': model_names, 'available': True})
+    except Exception:
+        pass
+    return jsonify({'models': [], 'available': False})
 
 
 @app.route('/api/ai/explain', methods=['POST'])
@@ -106,22 +153,27 @@ def explain_fix_endpoint():
 # ═══════════════════════════════════════════
 
 @app.route('/api/resolution', methods=['POST'])
+@app.route('/api/resolutions/set', methods=['POST'])
 def set_resolution_endpoint():
     data = request.get_json() or {}
-    finding = data.get('finding', {})
-    status = data.get('status', 'OPEN')
+    finding      = data.get('finding', {})
+    status       = data.get('status', 'OPEN')
     project_path = data.get('project_path', '')
+    finding_hash_val = data.get('finding_hash', '')
 
-    fhash = finding_hash(project_path, finding)
-    set_resolution(fhash, project_path, finding, status)
-    return jsonify({'ok': True, 'finding_hash': fhash, 'status': status})
+    if not finding_hash_val:
+        finding_hash_val = finding_hash(project_path, finding)
+    set_resolution(finding_hash_val, project_path, finding, status)
+    return jsonify({'ok': True, 'finding_hash': finding_hash_val, 'status': status})
 
 
 @app.route('/api/resolutions', methods=['GET'])
 def get_resolutions_endpoint():
-    project_path = request.args.get('project_path', '')
+    project_path = request.args.get('project_path',
+                   request.args.get('project', ''))  # accept both param names
     results = get_resolutions(project_path)
-    return jsonify({'resolutions': results})
+    # Return flat array (v2 renderer expects list of {finding_hash, status})
+    return jsonify(results if isinstance(results, list) else [])
 
 
 # ═══════════════════════════════════════════
@@ -180,14 +232,21 @@ def git_rollback():
 # ═══════════════════════════════════════════
 
 @app.route('/api/read_file', methods=['POST'])
+@app.route('/api/file/read', methods=['POST'])
 def read_file():
     data = request.get_json() or {}
-    filepath = data.get('path', '')
     project_path = data.get('project_path', '')
-    
-    if not filepath or not os.path.isfile(filepath):
+    rel_file     = data.get('file', data.get('path', ''))
+
+    # Build absolute path safely
+    if os.path.isabs(rel_file):
+        filepath = os.path.abspath(rel_file)
+    else:
+        filepath = os.path.abspath(os.path.join(project_path, rel_file))
+
+    if not os.path.isfile(filepath):
         return jsonify({'error': 'File not found'}), 404
-        
+
     if not is_safe_path(project_path, filepath):
         return jsonify({'error': 'Path traversal blocked'}), 403
 
@@ -613,11 +672,20 @@ def _get_fixed_line(filepath, lines, finding, line_num, project_path=None):
 
 
 @app.route('/api/preview', methods=['POST'])
+@app.route('/api/fix/preview', methods=['POST'])
 def preview():
-    data = request.get_json() or {}
-    filepath = data.get('path', '')
-    finding = data.get('finding', {})
+    data         = request.get_json() or {}
+    finding      = data.get('finding', {})
     project_path = data.get('project_path', '')
+
+    # Accept either explicit path or derive from project_path + finding.file
+    filepath = data.get('path', '')
+    if not filepath:
+        rel = finding.get('file', '')
+        if os.path.isabs(rel):
+            filepath = os.path.abspath(rel)
+        else:
+            filepath = os.path.abspath(os.path.join(project_path, rel))
 
     if not filepath or not os.path.isfile(filepath):
         return jsonify({'error': 'File not found'}), 404
@@ -680,9 +748,17 @@ def preview():
 @app.route('/api/fix', methods=['POST'])
 def apply_fix():
     data = request.get_json() or {}
-    filepath = data.get('path', '')
     finding = data.get('finding', {})
     project_path = data.get('project_path', '')
+
+    # Accept either explicit path or derive from project_path + finding.file
+    filepath = data.get('path', '')
+    if not filepath:
+        rel = finding.get('file', '')
+        if os.path.isabs(rel):
+            filepath = os.path.abspath(rel)
+        else:
+            filepath = os.path.abspath(os.path.join(project_path, rel))
 
     if not filepath or not os.path.isfile(filepath):
         return jsonify({'error': 'File not found'}), 404
@@ -713,24 +789,36 @@ def apply_fix():
         for i, extra_line in enumerate(fix_lines[1:], 1):
             lines.insert(actual_line_num - 1 + i, extra_line + meta['newline_style'])
 
-        result = safe_write_file(filepath, lines, meta)
-
-        # Real-time Verification Loop: Check if vulnerability survived
+        # Mutation Scope Invariant: In-Memory Verification Loop
         verification_failed = False
-        new_findings = scan_single_file(filepath, project_path)
-        for nf in new_findings:
-            if nf.get('category') == finding.get('category') and nf.get('title') == finding.get('title'):
-                verification_failed = True
-                break
+        _, ext = os.path.splitext(filepath)
+        ext = ext.lower()
+        if ext in SCAN_EXTENSIONS:
+            rel_path = os.path.relpath(filepath, project_path)
+            new_findings = _scan_file_content(lines, rel_path, ext)
+            for nf in new_findings:
+                if nf.get('category') == finding.get('category') and nf.get('title') == finding.get('title'):
+                    # Only fail if vulnerability is within the lines we just mutated
+                    if abs(nf.get('line', 0) - actual_line_num) <= len(fix_lines) + 1:
+                        verification_failed = True
+                        break
 
         if verification_failed:
-            import shutil
-            shutil.copy2(result['backup_path'], filepath)
             return jsonify({
                 'applied': False,
                 'method': method,
-                'reason': 'Real-time Verification Failed: Vulnerability survived. Automatically rolled back.',
+                'reason': 'Real-time Verification Failed: Vulnerability survived. Atomic commit aborted.',
             })
+
+        # Commit phase (Snapshot -> Atomic Write -> Snapshot Cleanup)
+        create_snapshot(filepath)
+        try:
+            result = safe_write_file(filepath, lines, meta)
+            delete_snapshot(filepath)
+        except Exception as e:
+            restore_snapshot(filepath)
+            delete_snapshot(filepath)
+            raise e
 
         # Mark as FIXED
         if project_path:
@@ -757,66 +845,109 @@ def batch_fix():
 
     results = []
     files_modified = set()
+    files_to_snapshot = set()
 
+    # Pre-flight scope determination
     for finding in findings:
-        filepath = os.path.abspath(os.path.join(project_path, finding.get('file', '')))
-        
-        if not is_safe_path(project_path, filepath):
-            results.append({'file': finding.get('file'), 'applied': False, 'reason': 'Path traversal blocked'})
-            continue
+        raw_file = finding.get('file', '')
+        if os.path.isabs(raw_file):
+            filepath = os.path.abspath(raw_file)
+        else:
+            filepath = os.path.abspath(os.path.join(project_path, raw_file))
+        files_to_snapshot.add(filepath)
 
-        if not os.path.isfile(filepath):
-            results.append({'file': finding.get('file'), 'applied': False, 'reason': 'File not found'})
-            continue
+    # Global Snapshot Transaction initialization
+    for fp in files_to_snapshot:
+        if os.path.exists(fp):
+            create_snapshot(fp)
 
-        try:
-            lines, meta = safe_read_file(filepath)
-            line_num = finding.get('line', 0)
-            if line_num < 1 or line_num > len(lines):
-                results.append({'file': finding.get('file'), 'applied': False, 'reason': 'File-level finding — needs .gitignore'})
+    batch_succeeded = True
+
+    try:
+        for finding in findings:
+            raw_file = finding.get('file', '')
+            if os.path.isabs(raw_file):
+                filepath = os.path.abspath(raw_file)
+            else:
+                filepath = os.path.abspath(os.path.join(project_path, raw_file))
+            
+            if not is_safe_path(project_path, filepath):
+                results.append({'file': finding.get('file'), 'applied': False, 'reason': 'Path traversal or Target Boundary blocked'})
+                batch_succeeded = False
                 continue
 
-            fixed, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num, project_path)
-
-            if method is None:
-                results.append({'file': finding.get('file'), 'applied': False, 'reason': 'No fix available'})
+            if not os.path.isfile(filepath):
+                results.append({'file': finding.get('file'), 'applied': False, 'reason': 'File not found'})
+                batch_succeeded = False
                 continue
 
-            # Apply at actual_line_num (handles line-shift from prior fixes)
-            fix_lines = fixed.split('\n')
-            lines[actual_line_num - 1] = fix_lines[0] + meta['newline_style']
-            for i, extra in enumerate(fix_lines[1:], 1):
-                lines.insert(actual_line_num - 1 + i, extra + meta['newline_style'])
+            try:
+                lines, meta = safe_read_file(filepath)
+                line_num = finding.get('line', 0)
+                if line_num < 1 or line_num > len(lines):
+                    results.append({'file': finding.get('file'), 'applied': False, 'reason': 'File-level finding — needs .gitignore'})
+                    continue
 
-            result = safe_write_file(filepath, lines, meta)
+                fixed, method, actual_line_num = _get_fixed_line(filepath, lines, finding, line_num, project_path)
 
-            # Real-time Verification Loop
-            verification_failed = False
-            new_findings = scan_single_file(filepath, project_path)
-            for nf in new_findings:
-                if nf.get('category') == finding.get('category') and nf.get('title') == finding.get('title'):
-                    verification_failed = True
-                    break
+                if method is None:
+                    results.append({'file': finding.get('file'), 'applied': False, 'reason': 'No fix available'})
+                    continue
 
-            if verification_failed:
-                import shutil
-                shutil.copy2(result['backup_path'], filepath)
-                results.append({'file': finding.get('file'), 'applied': False, 'reason': 'Verification Failed -> Reverted'})
-                continue
+                # Apply at actual_line_num
+                fix_lines = fixed.split('\n')
+                lines[actual_line_num - 1] = fix_lines[0] + meta['newline_style']
+                for i, extra in enumerate(fix_lines[1:], 1):
+                    lines.insert(actual_line_num - 1 + i, extra + meta['newline_style'])
 
-            files_modified.add(filepath)
+                # In-Memory Validation before writing
+                verification_failed = False
+                _, ext = os.path.splitext(filepath)
+                ext = ext.lower()
+                if ext in SCAN_EXTENSIONS:
+                    rel_path = os.path.relpath(filepath, project_path)
+                    new_findings = _scan_file_content(lines, rel_path, ext)
+                    for nf in new_findings:
+                        if nf.get('category') == finding.get('category') and nf.get('title') == finding.get('title'):
+                            if abs(nf.get('line', 0) - actual_line_num) <= len(fix_lines) + 1:
+                                verification_failed = True
+                                break
 
-            fhash = finding_hash(project_path, finding)
-            set_resolution(fhash, project_path, finding, 'FIXED')
+                if verification_failed:
+                    results.append({'file': finding.get('file'), 'applied': False, 'reason': 'In-Memory Verification Failed'})
+                    batch_succeeded = False
+                    continue
 
-            results.append({
-                'file': finding.get('file'),
-                'line': actual_line_num,
-                'applied': True,
-                'method': method,
-            })
-        except Exception as e:
-            results.append({'file': finding.get('file'), 'applied': False, 'reason': str(e)})
+                # Temp atomic write (does not break snapshot rule)
+                safe_write_file(filepath, lines, meta)
+
+                files_modified.add(filepath)
+                fhash = finding_hash(project_path, finding)
+                set_resolution(fhash, project_path, finding, 'FIXED')
+
+                results.append({
+                    'file': finding.get('file'),
+                    'line': actual_line_num,
+                    'applied': True,
+                    'method': method,
+                })
+            except Exception as e:
+                results.append({'file': finding.get('file'), 'applied': False, 'reason': str(e)})
+                batch_succeeded = False
+
+        if batch_succeeded:
+            for fp in files_to_snapshot:
+                delete_snapshot(fp)
+        else:
+            for fp in files_to_snapshot:
+                restore_snapshot(fp)
+                delete_snapshot(fp)
+
+    except Exception as e:
+        for fp in files_to_snapshot:
+            restore_snapshot(fp)
+            delete_snapshot(fp)
+        raise e
 
     return jsonify({
         'total': len(findings),
@@ -827,7 +958,44 @@ def batch_fix():
     })
 
 
+
+@app.route('/api/export', methods=['POST'])
+def export_findings():
+    """Export findings as JSON or CSV for download."""
+    import csv, io
+    data = request.get_json() or {}
+    findings = data.get('findings', [])
+    project_path = data.get('project_path', '')
+    fmt = data.get('format', 'json')
+
+    if fmt == 'csv':
+        output = io.StringIO()
+        fields = ['severity', 'category', 'title', 'file', 'line', 'detail']
+        writer = csv.DictWriter(output, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(findings)
+        return Response(
+            output.getvalue(),
+            mimetype='text/csv',
+            headers={'Content-Disposition': 'attachment;filename=aegis-report.csv'}
+        )
+    else:
+        report = {
+            'project': project_path,
+            'exported_at': datetime.now().isoformat(),
+            'total_findings': len(findings),
+            'findings': findings,
+        }
+        return jsonify(report)
+
+
 if __name__ == '__main__':
-    print("Aegis ReWrite backend starting on http://127.0.0.1:5055")
-    print(f"Routes registered: {len(app.url_map._rules)}")
-    app.run(host='127.0.0.1', port=5055, debug=False, use_reloader=False)
+    try:
+        from waitress import serve
+        print('Aegis ReWrite backend starting on http://127.0.0.1:5055 (waitress)')
+        print(f'Routes registered: {len(app.url_map._rules)}')
+        serve(app, host='127.0.0.1', port=5055, threads=4)
+    except ImportError:
+        # waitress not installed — fall back to Flask dev server
+        print('Aegis ReWrite backend starting on http://127.0.0.1:5055 (flask dev)')
+        app.run(host='127.0.0.1', port=5055, debug=False, use_reloader=False)
