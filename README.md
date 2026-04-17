@@ -6,6 +6,12 @@
 
 **Aegis ReWrite** is a high-assurance, standalone security scanner and AI-powered remediation engine. Extracted from the core Aegis Protect platform, ReWrite operates as an independent Electron + Flask application designed to scan local codebases, provide plain-English explanations of security vulnerabilities, and apply deterministic and AI-powered fixes with a single click.
 
+<div align="center">
+  <img src="assets/aegis_rewrite_dashboard.png" width="800" alt="Aegis ReWrite Security Remediation Dashboard" />
+  <br />
+  <sub><i>Aegis ReWrite Dashboard detecting os.system() usage, showcasing the VERITAS gold-and-obsidian interface.</i></sub>
+</div>
+
 ## Features
 
 - **Omni-Scanning Engine**: Automatically detects vulnerabilities across multiple languages and frameworks using robust AST and regex parsing.
@@ -17,6 +23,12 @@
   - Rollback desynchronization guards and syntax poisoning rejection (AST sanity checks before writing).
   - Redundant file I/O locks for concurrent race-condition survivability.
 - **Trust Visibility UX**: Deterministic assurances are surfaced to the user. Every remediation action leaves an atomic `.aegis.bak` backup. Finding severities are cleanly separated into `Auto-fix safe`, `Review first`, and `Manual only` lenses.
+
+<div align="center">
+  <img src="assets/aegis_rewrite_diff.png" width="700" alt="Aegis ReWrite AI Explanation and Diff Viewer" />
+  <br />
+  <sub><i>AI-powered explanation with interactive diff viewer, ensuring complete transparency before applying code fixes.</i></sub>
+</div>
 - **Standalone VERITAS Aesthetics**: Built with the signature VERITAS gold-and-black design language—clean, professional, and dark-mode native.
 
 ## Architecture Structure
@@ -75,7 +87,7 @@ Aegis ReWrite has undergone the rigorous **Destruction Campaign Wave 3** adversa
 - AST Model Injection / Poisoning
 - Batch Job Desynchronization
 
-Status verified via the VERITAS CLAEG protocol.
+Status verified via the [VERITAS Ω-CODE v2.0 Protocol](https://github.com/VrtxOmega/VERITAS-Omega-CODE).
 
 ## License
 
