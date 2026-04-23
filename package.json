@@ -4,7 +4,7 @@
   "description": "Aegis ReWrite — Point at code. Find problems. Fix them.",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
+    "start": "node launcher.js",
     "build:win": "electron-builder --win portable",
     "build:mac": "electron-builder --mac",
     "build:linux": "electron-builder --linux"

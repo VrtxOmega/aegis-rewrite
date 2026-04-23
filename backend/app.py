@@ -30,12 +30,16 @@ def is_safe_path(project_path, target_path):
         base = os.path.realpath(os.path.abspath(project_path))
         target = os.path.realpath(os.path.abspath(target_path))
         
+        cmp_base = os.path.normcase(base)
+        cmp_target = os.path.normcase(target)
+        cmp_aegis = os.path.normcase(AEGIS_ROOT)
+        
         # Target Boundary Invariant: self-shielding logic unless explicitly in DEV_MODE
-        if target.startswith(AEGIS_ROOT):
+        if os.path.commonpath([cmp_aegis, cmp_target]) == cmp_aegis:
             if os.environ.get('AEGIS_DEV_MODE') != '1':
                 return False
                 
-        return os.path.commonpath([base, target]) == base
+        return os.path.commonpath([cmp_base, cmp_target]) == cmp_base
     except (ValueError, OSError):
         # ValueError on Windows when paths are on different drives
         return False
