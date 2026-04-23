@@ -64,7 +64,7 @@ MUTATIONS = [
 
     # CORS
     {"title": "cors wildcard", "category": "Exposed Binding", "file": "test.js", "lines": [
-        ("res.setHeader('Access-Control-Allow-Origin', '"http://127.0.0.1"');", "res.setHeader('Access-Control-Allow-Origin', '\"http://127.0.0.1\"');", "Basic JS wildcard"),
+        ("res.setHeader('Access-Control-Allow-Origin', '*');", 'res.setHeader(\'Access-Control-Allow-Origin\', \'"http://127.0.0.1"\');', "Basic JS wildcard"),
     ]},
 
     {"title": "cors enabled", "category": "Exposed Binding", "file": "test.py", "lines": [
